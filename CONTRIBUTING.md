@@ -11,6 +11,24 @@ Open an issue using the bug report form. The most useful things to include:
   `log_level = "debug"` in Settings);
 * your Windows and PowerToys versions, and which app/window misbehaved.
 
+## Workflow: branches and pull requests
+
+`main` is protected. Every change goes through a pull request:
+
+1. Branch from `main`: `feature/<name>`, `fix/<name>`, or `chore/<name>`.
+2. Push the branch and open a PR. Fill in the template.
+3. **CI must pass** (the `check` job: fmt, clippy, unit tests), and the branch must be up
+   to date with `main`.
+4. **One approving review** is required. All review conversations must be resolved.
+5. PRs are **squash-merged**, so `main` stays a linear list of one commit per change. The
+   branch is deleted after merging.
+
+Direct pushes, force-pushes and deleting `main` are blocked for everyone. Release tags
+(`v*`) can only be created by maintainers and can't be moved or deleted once pushed.
+
+Dependabot opens weekly PRs for Rust crates and GitHub Actions, plus immediate ones for
+security advisories. Review them like any other PR.
+
 ## Development
 
 Prerequisites: Rust (installed automatically from `rust-toolchain.toml` by rustup), the

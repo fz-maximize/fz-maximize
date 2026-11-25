@@ -1,0 +1,29 @@
+# Dependabot version updates. (Security updates and alerts are enabled in the repo
+# settings and open PRs as soon as an advisory affects a dependency.)
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+    groups:
+      # One PR per week for all compatible (minor/patch) crate updates.
+      cargo-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    groups:
+      # Actions are pinned to commit SHAs; Dependabot bumps the SHA and version comment.
+      github-actions:
+        patterns: ["*"]

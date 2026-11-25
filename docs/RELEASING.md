@@ -92,11 +92,15 @@ task package
 
 ## Release checklist
 
-1. Bump `version` in `Cargo.toml` (and `cargo build` so `Cargo.lock` updates), commit.
+1. Bump `version` in `Cargo.toml` (and `cargo build` so `Cargo.lock` updates) on a
+   branch, open a PR and merge it (`main` only accepts PRs).
 2. `task ci` locally: checks, tests, release build and installer.
 3. `task e2e` on a desktop with FancyZones (live behavior; CI can't run this).
 4. `task upstream:check` against the PowerToys version you're shipping for.
-5. Tag and push: `git tag v<ver>` then `git push origin main v<ver>`.
+5. Tag the merged commit and push the tag:
+   `git pull` then `git tag -a v<ver> -m "fz-maximize <ver>"` then `git push origin v<ver>`.
+   Release tags are protected: only maintainers can create them, and once pushed they
+   can't be moved or deleted. A published version is final, so a fix means a new version.
    The **Release** workflow (`.github/workflows/release.yml`) then:
    * checks that the tag matches `Cargo.toml`;
    * runs `task check` and `task package` on a clean Windows runner;

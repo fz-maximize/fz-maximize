@@ -20,11 +20,29 @@ Open an issue using the bug report form. The most useful things to include:
 3. **CI must pass** (the `check` job: fmt, clippy, unit tests), and the branch must be up
    to date with `main`.
 4. **One approving review** is required. All review conversations must be resolved.
-5. PRs are **squash-merged**, so `main` stays a linear list of one commit per change. The
-   branch is deleted after merging.
+5. `main` keeps a **linear history** of the PR's own commits (rebased onto `main`).
 
-Direct pushes, force-pushes and deleting `main` are blocked for everyone. Release tags
-(`v*`) can only be created by maintainers and can't be moved or deleted once pushed.
+Force-pushes and deleting `main` are blocked for everyone. Direct pushes are blocked
+except for maintainers merging a PR. Release tags (`v*`) can only be created by
+maintainers and can't be moved or deleted once pushed.
+
+### Merging (maintainers)
+
+Don't use GitHub's merge button. Any merge GitHub performs (squash or rebase) creates new
+commits on GitHub's servers and records the merging account's name and email as
+committer. Instead, fast-forward `main` to the PR's commits, so `main` gets exactly the
+commits that were reviewed and passed CI, with their own identity:
+
+```powershell
+git fetch origin
+git switch <branch>
+git rebase origin/main                 # if needed; push the branch and let CI pass again
+git push origin <branch>:main          # fast-forward; GitHub marks the PR as merged
+git push origin --delete <branch>
+```
+
+Commits should use the project identity (`git config user.name fz-maximize`,
+`git config user.email maintainers@fz-maximize.invalid` in your clone), not a personal one.
 
 Dependabot opens weekly PRs for Rust crates and GitHub Actions, plus immediate ones for
 security advisories. Review them like any other PR.

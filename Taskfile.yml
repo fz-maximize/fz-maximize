@@ -136,7 +136,8 @@ tasks:
     desc: Uninstall silently via the installer's uninstaller (config and logs are kept)
     cmds:
       - task: stop
-      - '{{.PS}} "$u = ''{{.INSTALL_DIR}}\unins000.exe''; if (Test-Path $u) { Start-Process -Wait -FilePath $u -ArgumentList ''/VERYSILENT'',''/SUPPRESSMSGBOXES'',''/NORESTART'' } else { ''not installed'' }"'
+      # \$ keeps Task's shell from expanding the PowerShell variable (see `try`).
+      - '{{.PS}} "\$u = ''{{.INSTALL_DIR}}\unins000.exe''; if (Test-Path \$u) { Start-Process -Wait -FilePath \$u -ArgumentList ''/VERYSILENT'',''/SUPPRESSMSGBOXES'',''/NORESTART''; ''uninstalled'' } else { ''not installed'' }"'
 
   start:
     desc: Start the installed copy in the background

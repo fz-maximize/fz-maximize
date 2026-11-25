@@ -25,14 +25,14 @@ use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, Syste
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_PUSHBUTTON, CB_ADDSTRING,
-    CB_GETCURSEL, CB_SETCURSEL, CBS_DROPDOWNLIST, CreateWindowExW, DefWindowProcW, DestroyWindow, ES_AUTOHSCROLL,
-    ES_AUTOVSCROLL, ES_MULTILINE, ES_WANTRETURN, GetCursorPos, GetDlgItem, GetWindowTextLengthW, GetWindowTextW, HICON,
-    HMENU, ICON_BIG, ICON_SMALL, IDCANCEL, IDOK, IsDialogMessageW, MB_ICONWARNING, MB_OK, MSG, MessageBoxW,
-    NONCLIENTMETRICSW, RegisterClassExW, SPI_GETNONCLIENTMETRICS, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW,
-    SetForegroundWindow, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
-    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_SETFONT, WM_SETICON, WNDCLASSEXW, WS_CAPTION, WS_CHILD,
-    WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
-    WS_VSCROLL,
+    CB_GETCURSEL, CB_SETCURSEL, CBN_SELCHANGE, CBS_DROPDOWNLIST, CreateWindowExW, DefWindowProcW, DestroyWindow,
+    ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_WANTRETURN, GetCursorPos, GetDlgItem, GetWindowTextLengthW,
+    GetWindowTextW, HICON, HMENU, ICON_BIG, ICON_SMALL, IDCANCEL, IDOK, IsDialogMessageW, MB_ICONWARNING, MB_OK, MSG,
+    MessageBoxW, NONCLIENTMETRICSW, RegisterClassExW, SPI_GETNONCLIENTMETRICS, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
+    SendMessageW, SetForegroundWindow, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_SETFONT, WM_SETICON, WNDCLASSEXW,
+    WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP,
+    WS_VISIBLE, WS_VSCROLL,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
@@ -260,14 +260,12 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
 
     // ---- left column ----
     b.column(0);
-    b.group("Maximize");
-    b.labeled(
-        "Hold this for a normal full-screen maximize:",
-        ID_MODIFIER,
-        Ctl::Combo,
-        230,
-    );
-    b.hint("Applies to the Maximize button, title-bar double-click and Win + this key + Up.");
+    b.group("General");
+    b.check(ID_AUTOSTART, "Start with Windows");
+    b.labeled("Log detail:", ID_LOGLEVEL, Ctl::Combo, 120);
+    b.end_group();
+
+    b.group("Behavior");
     b.labeled(
         "Maximizing a window that already fills its zone:",
         ID_ALREADY,
@@ -282,6 +280,15 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
         ID_LOCK,
         "Lock zone-maximized windows (no resizing; dragging the title bar restores them)",
     );
+    b.labeled(
+        "Hold this for a normal full-screen maximize:",
+        ID_MODIFIER,
+        Ctl::Combo,
+        230,
+    );
+    b.hint("With the Maximize button or a title-bar double-click. It also unlocks a locked window.");
+    b.check(ID_WINUP_BYPASS, "Win + that key + Up: full-screen maximize");
+    b.hint("Replaces Windows' own Win+Shift+Up (stretch vertically). Needs Win+Up caught early.");
     // Hotkey row: label, hotkey control, "+ Win" checkbox.
     let (x, iw) = (b.ix(), b.iw());
     b.push(
@@ -299,13 +306,13 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
     b.hint("Click the box and press the keys. Backspace clears it (no hotkey).");
     b.end_group();
 
-    b.group("No-flash interception");
+    b.group("Appearance");
     b.check(
         ID_PRE_MOUSE,
-        "Catch the Maximize button and title-bar double-click early",
+        "No maximize flash: Maximize button and title-bar double-click",
     );
-    b.check(ID_PRE_WINUP, "Catch Win+Up early");
-    b.check(ID_WINUP_BYPASS, "Win + the key above + Up: full-screen maximize");
+    b.check(ID_PRE_WINUP, "No maximize flash: Win+Up");
+    b.hint("Caught before Windows maximizes, these go straight to the zone. Others are corrected after.");
     b.check(
         ID_ANIMATE,
         "Animate the window into its zone (like Windows' own maximize)",
@@ -313,19 +320,13 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
     b.labeled("Animation style:", ID_ANIM_STYLE, Ctl::Combo, 260);
     b.check(ID_ANIM_MATCH, "Match Windows' animation speed");
     b.labeled("Otherwise, length (milliseconds, 50-1000):", ID_ANIM_MS, Ctl::Edit, 70);
-    b.hint("Caught early, windows go straight to their zone without the maximize animation.");
-    b.hint("The Win + key + Up option replaces Windows' own Win+Shift+Up (stretch vertically).");
-    b.end_group();
-
-    b.group("General");
-    b.check(ID_AUTOSTART, "Start with Windows");
-    b.labeled("Log detail:", ID_LOGLEVEL, Ctl::Combo, 120);
+    b.hint("Animates the no-flash gestures above. Off while Windows' animation effects are off.");
     b.end_group();
     let left_bottom = b.y;
 
     // ---- right column ----
     b.column(1);
-    b.group("Where it applies");
+    b.group("Exclusions");
     b.labeled(
         "Only monitors at least this wide (width / height, 0 = all):",
         ID_ASPECT,
@@ -338,14 +339,14 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
     b.label("Leave these apps alone (exe name or window-title text, one per line):");
     b.multi(ID_APPS, 44);
     b.check(ID_FZ_EXCLUDED, "Also leave FancyZones' excluded apps alone");
+    b.end_group();
+
+    b.group("FancyZones integration");
+    b.check(ID_FZ_REQUIRE, "Do nothing while FancyZones is turned off in PowerToys");
     b.check(
         ID_FZ_DEFAULT,
         "Use FancyZones' default layout on monitors with no saved layout",
     );
-    b.check(ID_FZ_REQUIRE, "Do nothing while FancyZones is turned off in PowerToys");
-    b.end_group();
-
-    b.group("FancyZones agreement check");
     b.check(
         ID_CHECK,
         "Compare with FancyZones' own snaps (spots changes after updates)",
@@ -480,10 +481,17 @@ fn send(h: HWND, msg: u32, w: usize, l: isize) -> isize {
 
 /// The speed options only matter when animating; the length box only when not matching
 /// Windows.
-fn update_animation_controls(hwnd: HWND) {
-    let animate = checked(hwnd, ID_ANIMATE);
+fn update_dependent_controls(hwnd: HWND) {
+    // Win + bypass + Up is handled by the Win+Up interception, with the bypass key.
+    let bypass_key = MODIFIERS[combo_index(hwnd, ID_MODIFIER).min(MODIFIERS.len() - 1)].1 != BypassModifier::None;
+    let win_up_bypass = checked(hwnd, ID_PRE_WINUP) && bypass_key;
+    // Only the gestures caught early (no flash) are animated.
+    let can_animate = checked(hwnd, ID_PRE_MOUSE) || checked(hwnd, ID_PRE_WINUP);
+    let animate = can_animate && checked(hwnd, ID_ANIMATE);
     let custom = animate && !checked(hwnd, ID_ANIM_MATCH);
     unsafe {
+        let _ = EnableWindow(item(hwnd, ID_WINUP_BYPASS), win_up_bypass);
+        let _ = EnableWindow(item(hwnd, ID_ANIMATE), can_animate);
         let _ = EnableWindow(item(hwnd, ID_ANIM_STYLE), animate);
         let _ = EnableWindow(item(hwnd, ID_ANIM_MATCH), animate);
         let _ = EnableWindow(item(hwnd, ID_ANIM_MS), custom);
@@ -629,7 +637,7 @@ fn fill(hwnd: HWND, ctx: &Context) {
     set_check(hwnd, ID_ANIMATE, c.animate_maximize);
     set_check(hwnd, ID_ANIM_MATCH, c.animation_match_windows);
     set_text(hwnd, ID_ANIM_MS, &c.animation_ms.to_string());
-    update_animation_controls(hwnd);
+    update_dependent_controls(hwnd);
     set_check(hwnd, ID_FZ_EXCLUDED, c.respect_fancyzones_excluded_apps);
     set_check(hwnd, ID_FZ_DEFAULT, c.use_fancyzones_default_layout);
     set_check(hwnd, ID_FZ_REQUIRE, c.require_fancyzones_enabled);
@@ -746,6 +754,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let id = (wparam.0 & 0xFFFF) as i32;
             let code = ((wparam.0 >> 16) & 0xFFFF) as u32;
             tracing::trace!(id, code, "settings WM_COMMAND");
+            if code == CBN_SELCHANGE && id == ID_MODIFIER {
+                update_dependent_controls(hwnd);
+            }
             if code == BN_CLICKED {
                 match id {
                     ID_OK => {
@@ -761,7 +772,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     ID_APPLY => {
                         apply(hwnd);
                     }
-                    ID_ANIMATE | ID_ANIM_MATCH => update_animation_controls(hwnd),
+                    ID_ANIMATE | ID_ANIM_MATCH | ID_PRE_MOUSE | ID_PRE_WINUP => update_dependent_controls(hwnd),
                     ID_OPEN_FILE => {
                         let path = STATE.with(|s| s.borrow().as_ref().map(|s| s.ctx.config_path.clone()));
                         if let Some(p) = path {

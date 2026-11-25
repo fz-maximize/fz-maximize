@@ -153,10 +153,14 @@ impl Default for Config {
 pub const TEMPLATE: &str = r#"# fz-maximize configuration. All keys are optional; these are the defaults.
 # Easiest: tray icon -> Settings... (which rewrites this file, keeping these comments).
 # After editing by hand, use tray -> "Reload" (or restart).
+# The sections match the Settings window. ("Start with Windows" isn't stored here.)
 
-# Hold this while clicking Maximize / double-clicking the title bar to get the normal
-# full-monitor maximize: "shift" | "ctrl" | "alt" | "none"
-bypass_modifier = "shift"
+# ---- General ---------------------------------------------------------------------
+
+# error | warn | info | debug | trace
+log_level = "info"
+
+# ---- Behavior --------------------------------------------------------------------
 
 # Maximizing a window that already fills its zone:
 #   "restore"  -> toggle back to its size before it was snapped
@@ -171,10 +175,26 @@ snap_on_drag_maximize = true
 # restore). Hold the bypass key to resize or move a locked window normally.
 lock_zone_maximized = true
 
-# Catch the maximize button / title-bar double-click / Win+Up *before* Windows
-# maximizes, so the window goes straight into its zone without the maximize animation
-# flashing first. Other maximizes (drag to top, some custom title bars) are still
-# corrected afterwards.
+# Hold this while clicking Maximize / double-clicking the title bar to get the normal
+# full-monitor maximize: "shift" | "ctrl" | "alt" | "none"
+bypass_modifier = "shift"
+
+# Win + the bypass modifier + Up (Win+Shift+Up by default) gives a normal full-monitor
+# maximize, like Shift + maximize button. This replaces Windows' own Win+Shift+Up
+# ("stretch window vertically"); set false to keep Windows' behavior. Needs
+# preempt_win_up.
+win_up_bypass = true
+
+# Toggle a full-monitor maximize of the active window. "" disables the hotkey.
+# Modifiers: Ctrl, Alt, Shift, Win. Keys: A-Z, 0-9, F1-F24, Up, Down, Left, Right,
+# Home, End, PageUp, PageDown, Insert, Delete, Space, Enter, Tab, Esc, Num0-Num9.
+hotkey = "Ctrl+Alt+Up"
+
+# ---- Appearance ------------------------------------------------------------------
+
+# No maximize flash: catch the maximize button / title-bar double-click / Win+Up
+# *before* Windows maximizes, so the window goes straight into its zone. Other
+# maximizes (drag to top, some custom title bars) are corrected right afterwards.
 preempt_mouse_maximize = true
 preempt_win_up = true
 
@@ -190,17 +210,9 @@ animation_style = "auto"
 animation_match_windows = true
 animation_ms = 200
 
-# Win + the bypass modifier + Up (Win+Shift+Up by default) gives a normal full-monitor
-# maximize, like Shift + maximize button. This replaces Windows' own Win+Shift+Up
-# ("stretch window vertically"); set false to keep Windows' behavior.
-win_up_bypass = true
+# ---- Exclusions ------------------------------------------------------------------
 
-# Toggle a full-monitor maximize of the active window. "" disables the hotkey.
-# Modifiers: Ctrl, Alt, Shift, Win. Keys: A-Z, 0-9, F1-F24, Up, Down, Left, Right,
-# Home, End, PageUp, PageDown, Insert, Delete, Space, Enter, Tab, Esc, Num0-Num9.
-hotkey = "Ctrl+Alt+Up"
-
-# Only intercept on monitors at least this wide relative to their height
+# Only work on monitors at least this wide relative to their height
 # (e.g. 2.0 = ultrawides only). 0 = every monitor with a multi-zone layout.
 min_aspect_ratio = 0.0
 
@@ -214,11 +226,13 @@ excluded_apps = []
 # Also honor FancyZones' own "Excluded apps" list.
 respect_fancyzones_excluded_apps = true
 
-# Monitors without a saved FancyZones layout use FancyZones' default layout.
-use_fancyzones_default_layout = true
+# ---- FancyZones integration ------------------------------------------------------
 
 # Do nothing while FancyZones is disabled in PowerToys.
 require_fancyzones_enabled = true
+
+# Monitors without a saved FancyZones layout use FancyZones' default layout.
+use_fancyzones_default_layout = true
 
 # Each time FancyZones itself snaps a window (Shift-drag), compare where it put the
 # window with where fz-maximize computes that zone. Detects drift after PowerToys updates.
@@ -227,9 +241,6 @@ fancyzones_check = true
 # Once a disagreement is confirmed: "warn" (log + notification) or "native"
 # (also stop redirecting maximize on that monitor until PowerToys/the layout changes).
 on_fancyzones_mismatch = "warn"
-
-# error | warn | info | debug | trace
-log_level = "info"
 "#;
 
 /// Render `cfg` as a config file: [`TEMPLATE`] (with all its documentation) with each

@@ -123,9 +123,10 @@ tasks:
 
   try:
     desc: Run the release build from target/ in the background with debug logging (no install, no autostart)
-    deps: [build:release]
     cmds:
+      # Stop first: a running copy locks the exe, so the build couldn't replace it.
       - task: stop
+      - task: build:release
       # \$ stops Task's shell from expanding $env before PowerShell sees it.
       - '{{.PS}} "\$env:FZM_LOG=''debug''; Start-Process -FilePath ''{{.RELEASE_EXE}}''"'
       - cmd: echo "Running. Watch it with 'task logs -- -Wait'; stop with 'task stop'."

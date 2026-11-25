@@ -26,7 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, PCWSTR, w};
 
-use crate::animate::{self, Animator, Plan};
+use crate::animate::{self, Animator};
 use crate::config::{self, BypassModifier, Config, MismatchAction};
 use crate::drift::{self, DriftState, DriftTracker, Outcome, Record};
 use crate::engine::{Decision, Engine, MaximizeInput, NativeReason, Observation, Options};
@@ -272,9 +272,8 @@ impl App {
             && animate::system_animations_enabled()
             && let Some(from) = window::window_rect(hwnd)
         {
-            let plan = animate::plan(&from, &target);
             // Don't animate into a zone the window can't be moved to (elevated apps).
-            if plan != Plan::NoAnimation && window::can_place(hwnd) {
+            if animate::waypoint(&from, &target).is_some() && window::can_place(hwnd) {
                 if self.animator.is_none() {
                     self.animator = Animator::start();
                 }

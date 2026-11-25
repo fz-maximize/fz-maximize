@@ -1520,3 +1520,72 @@ fn measure_windows_maximize_animation() {
     report_animation("maximize", &max);
     report_animation("restore", &restore);
 }
+
+#[test]
+#[ignore = "drives the live desktop with real clicks; run with `task e2e`"]
+fn animates_wherever_the_window_starts() {
+    // Real windows rarely sit neatly inside a zone. These shapes come from real use: wider
+    // than the zone and sticking out of both sides, and mostly in one zone but reaching
+    // into the next. Each must animate (both ways), not just jump.
+    let Some((_guard, h, zones, _log)) = setup_with("fz-maximize-e2e-anim-any.log", Some("animation_ms = 250\n"))
+    else {
+        return;
+    };
+    let mut original = POINT::default();
+    unsafe { GetCursorPos(&mut original).unwrap() };
+    let _mouse = MouseGuard(original);
+
+    let (z0, z1) = (zones[0], zones[1]);
+    let half = (z1.b - z1.t) / 2;
+    let cases = [
+        // (description, start rect x, y, w, h, expected zone)
+        (
+            "wider than the zone, out both sides",
+            z1.l - 100,
+            z1.t + 300,
+            (z1.r - z1.l) + 200,
+            half,
+            z1,
+        ),
+        (
+            "mostly in one zone, reaching into the next",
+            z0.l + 40,
+            z0.t + 200,
+            (z0.r - z0.l) + 110,
+            half,
+            z0,
+        ),
+    ];
+    for (what, x, y, w, hgt, zone) in cases {
+        unsafe { SetWindowPos(h, None, x, y, w, hgt, SWP_NOZORDER).unwrap() };
+        std::thread::sleep(Duration::from_millis(400));
+        let before = window_rect(h);
+        force_foreground(h);
+        std::thread::sleep(Duration::from_millis(400));
+
+        let (max_btn, _) = title_bar_buttons(h);
+        let snap = trace_animation(h, &zone_window_rect(h, &zone), None, || click(h, max_btn.x, max_btn.y));
+        eprintln!(
+            "{what}: overlay {:?}..{:?}, reached zone at {:?}",
+            snap.overlay_first_seen, snap.overlay_last_seen, snap.window_reached_target
+        );
+        assert_covered_animation(what, &snap);
+        assert!(
+            frame(h).near(&zone, 1),
+            "{what}: final frame {:?} != zone {zone:?}",
+            frame(h)
+        );
+        assert!(!snap.maximized_at_some_point, "{what}: maximized at some point (flash)");
+        std::thread::sleep(Duration::from_millis(700));
+
+        let (_, caption) = title_bar_buttons(h);
+        let back = trace_animation(h, &before, None, || double_click(h, caption));
+        assert_covered_animation(&format!("{what} (toggle back)"), &back);
+        assert!(
+            window_rect(h).near(&before, 2),
+            "{what}: expected {before:?}, got {:?}",
+            window_rect(h)
+        );
+        std::thread::sleep(Duration::from_millis(700));
+    }
+}

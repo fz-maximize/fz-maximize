@@ -1,0 +1,53 @@
+[package]
+name = "fz-maximize"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Make the Windows maximize action fill the PowerToys FancyZones zone a window is in, instead of the whole monitor."
+license = "MIT"
+repository = "https://github.com/fz-maximize/fz-maximize"
+homepage = "https://github.com/fz-maximize/fz-maximize"
+readme = "README.md"
+keywords = ["windows", "fancyzones", "powertoys", "window-manager", "maximize"]
+categories = ["gui"]
+publish = false
+
+[[bin]]
+name = "fz-maximize"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "registry"] }
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Threading",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

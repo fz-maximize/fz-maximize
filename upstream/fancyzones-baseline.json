@@ -1,0 +1,32 @@
+{
+  "comment": "Upstream PowerToys files that fz-maximize mirrors, pinned at the versions the port was written against. `task upstream:check` diffs them against PowerToys main (or -Ref <tag>). After reviewing a change and updating the port, run `task upstream:accept` to re-pin.",
+  "repo": "microsoft/PowerToys",
+  "commit": "99845fc9a8d93f755920fc931697069fda7baa06",
+  "commit_date": "2026-11-25T07:04:35Z",
+  "powertoys_version": "v0.102",
+  "files": [
+    { "path": "src/modules/fancyzones/FancyZonesLib/LayoutConfigurator.cpp", "blob": "93a63d0ed3dc0ef19fe91e375d3f94431f768316", "impact": "high", "mirrors": "src/fancyzones/layout.rs", "what": "zone geometry for every template and custom layout" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/Layout.cpp", "blob": "a9f7d476a859205e8834af92579133a62cbc3657", "impact": "high", "mirrors": "src/fancyzones/layout.rs (compute_zones)", "what": "which spacing applies, zone-count validation" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/Zone.cpp", "blob": "c57de1f8bc2cd77886b9953e007158b5a5f8a2cb", "impact": "medium", "mirrors": "src/fancyzones/layout.rs (zone_is_valid)", "what": "zone validity rules" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/Zone.h", "blob": "6c88d6facdfa807814e7d574522ab2f612e1ef12", "impact": "medium", "mirrors": "src/fancyzones/layout.rs (MAX_NEGATIVE_SPACING)", "what": "zone constants" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/FancyZonesDataTypes.h", "blob": "58673c701294b9385dafe912bd0b8b0c40b00f35", "impact": "high", "mirrors": "src/fancyzones/matching.rs", "what": "monitor/device id equality rules" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/FancyZonesDataTypes.cpp", "blob": "8fab087536b470010ce2c0b5992fd95383efa663", "impact": "medium", "mirrors": "src/fancyzones/layout.rs (LayoutType)", "what": "layout type strings" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/MonitorUtils.cpp", "blob": "549e94cfd5894eb47c1d3051473b05a03e24240f", "impact": "high", "mirrors": "src/monitors.rs, src/fancyzones/matching.rs", "what": "monitor identification (device id, instance, number, serial)" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/FancyZonesData/AppliedLayouts.cpp", "blob": "b05cd3da0b2c641ce668a830fbc9e94e2ee1d24f", "impact": "high", "mirrors": "src/fancyzones/model.rs, src/fancyzones/matching.rs", "what": "applied-layouts.json parsing and lookup" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/FancyZonesData/AppliedLayouts.h", "blob": "e4f796913b831ea14e0380758869386252ffb9e0", "impact": "high", "mirrors": "src/fancyzones/model.rs", "what": "applied-layouts.json key names" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/FancyZonesData/CustomLayouts.cpp", "blob": "9ac947b3006040689a9f1a364211ca43b784198a", "impact": "high", "mirrors": "src/fancyzones/model.rs", "what": "custom-layouts.json parsing" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/FancyZonesData/CustomLayouts.h", "blob": "166304ed4a341941dc816d786d879fe6b1726dc5", "impact": "high", "mirrors": "src/fancyzones/model.rs", "what": "custom-layouts.json key names" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/FancyZonesData/DefaultLayouts.cpp", "blob": "bb8ea21f4cf2a40ccc19f0e0adb024ac9f0f5a98", "impact": "medium", "mirrors": "src/fancyzones/model.rs (DefaultLayouts)", "what": "default layout for monitors without an entry" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/FancyZonesData/LayoutData.h", "blob": "454e279ea488fb4e76a56508c8d5ee018f9048d0", "impact": "medium", "mirrors": "src/fancyzones/model.rs (DefaultLayouts)", "what": "layout defaults" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/FancyZonesData/LayoutDefaults.h", "blob": "b41e5fce885bf4c0006e0a471e1b47c57a732393", "impact": "medium", "mirrors": "src/fancyzones/model.rs (DefaultLayouts)", "what": "default zone count / spacing" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/WindowUtils.cpp", "blob": "72d8312c534487631bcc5a3cb9f97a70ce4444f4", "impact": "medium", "mirrors": "src/window.rs", "what": "window placement, border compensation, exclusions" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/FancyZonesWindowProcessing.cpp", "blob": "45c4ed2a347988c0383e6a38b6e80a9250042ca5", "impact": "low", "mirrors": "src/window.rs (check_eligible)", "what": "which windows FancyZones processes" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/FancyZonesWindowProperties.cpp", "blob": "7687b68f4eb403c98dcb52ccad444a64b66e618f", "impact": "medium", "mirrors": "src/window.rs (fancyzones_stamp), src/drift.rs", "what": "zone stamp property used by the agreement check" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/FancyZonesWindowProperties.h", "blob": "e8caa8d32f0b4aedfad639f6427741d13db7b13a", "impact": "medium", "mirrors": "src/window.rs (fancyzones_stamp)", "what": "window property names" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/VirtualDesktop.cpp", "blob": "06ca30719ee95be85068b62bdae230888047ddea", "impact": "medium", "mirrors": "src/vdesktop.rs", "what": "current virtual desktop resolution" },
+    { "path": "src/modules/fancyzones/FancyZonesLib/Settings.cpp", "blob": "afdaa817ab9962c93c98a19be86bb4bb19a6bf82", "impact": "low", "mirrors": "src/fancyzones/model.rs (parse_fz_settings)", "what": "excluded-apps parsing (file changes with any new setting)" },
+    { "path": "src/common/utils/excluded_apps.h", "blob": "fed45a8b839be8b3a704df5515b6b2b9da845a6b", "impact": "low", "mirrors": "src/filters.rs", "what": "excluded-app matching" },
+    { "path": "src/common/utils/window.h", "blob": "2de922a04097ec749ca07d6acf388748a724a770", "impact": "low", "mirrors": "src/window.rs (SYSTEM_CLASSES)", "what": "system window classes" },
+    { "path": "src/common/Display/dpi_aware.cpp", "blob": "cb8c46df355140018a92872512b97d8888eb1433", "impact": "medium", "mirrors": "src/fancyzones/layout.rs (canvas)", "what": "DPI conversion used by canvas layouts" }
+  ]
+}

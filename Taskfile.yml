@@ -1,0 +1,233 @@
+# https://taskfile.dev  —  run `task` to list tasks.
+version: '3'
+
+vars:
+  BIN: fz-maximize
+  DEBUG_EXE: target/debug/{{.BIN}}.exe
+  RELEASE_EXE: target/release/{{.BIN}}.exe
+  ARM64_TARGET: aarch64-pc-windows-msvc
+  INSTALL_DIR: '{{.LOCALAPPDATA}}\Programs\{{.BIN}}'
+  INSTALLED_EXE: '{{.INSTALL_DIR}}\{{.BIN}}.exe'
+  LOG_FILE: '{{.LOCALAPPDATA}}\{{.BIN}}\{{.BIN}}.log'
+  CONFIG_FILE: '{{.APPDATA}}\{{.BIN}}\config.toml'
+  VERSION:
+    # pkgid looks like `path+file:///C:/.../fz-maximize#0.1.0`; keep what follows the last # or @
+    sh: 'id=$(cargo pkgid --offline); echo "${id##*[#@]}"'
+  PS: powershell -NoProfile -ExecutionPolicy Bypass -Command
+
+tasks:
+  default:
+    desc: List available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  setup:
+    desc: Install/verify the pinned Rust toolchain (rust-toolchain.toml) and components
+    cmds:
+      - rustup show active-toolchain || rustup toolchain install
+      - rustup component list --installed
+      - cargo fetch
+
+  setup:arm64:
+    desc: Add the ARM64 Windows target (needs the VS "ARM64 build tools" component)
+    cmds:
+      - rustup target add {{.ARM64_TARGET}}
+
+  fmt:
+    desc: Format the code
+    cmds:
+      - cargo fmt
+
+  fmt:check:
+    desc: Check formatting (CI)
+    cmds:
+      - cargo fmt --check
+
+  lint:
+    desc: Clippy with warnings as errors
+    cmds:
+      - cargo clippy --all-targets -- -D warnings
+
+  test:
+    desc: Run unit + fixture tests (no desktop interaction)
+    cmds:
+      - cargo test {{.CLI_ARGS}}
+
+  e2e:
+    desc: Live desktop test — stops a running instance, opens Notepad, maximizes it (also via Shift, hotkey, Win+Up) and checks zones
+    cmds:
+      - task: stop
+      - cargo test --test e2e -- --ignored --nocapture --test-threads=1
+
+  check:
+    desc: Everything CI checks — fmt, clippy, tests
+    cmds:
+      - task: fmt:check
+      - task: lint
+      - task: test
+
+  build:
+    desc: Debug build (console subsystem, logs to the terminal with --console)
+    cmds:
+      - cargo build
+
+  build:release:
+    desc: Optimized release build (no console window)
+    sources:
+      - src/**/*.rs
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .cargo/config.toml
+      - build.rs
+      - assets/*
+    generates:
+      - '{{.RELEASE_EXE}}'
+    cmds:
+      - cargo build --release
+
+  build:arm64:
+    desc: Release build for Windows on ARM
+    deps: [setup:arm64]
+    cmds:
+      - cargo build --release --target {{.ARM64_TARGET}}
+
+  run:
+    desc: Run the debug build in the foreground with debug logging to the console (Ctrl+C to stop)
+    cmds:
+      - task: stop
+      - cargo run -- --console {{.CLI_ARGS}}
+
+  dump:
+    desc: Show monitors, matched FancyZones layouts and zone rectangles (pass `-- --json` for JSON)
+    cmds:
+      - cargo run -q -- --dump {{.CLI_ARGS}}
+
+  try:
+    desc: Run the release build from target/ in the background with debug logging (no install, no autostart)
+    deps: [build:release]
+    cmds:
+      - task: stop
+      # \$ stops Task's shell from expanding $env before PowerShell sees it.
+      - '{{.PS}} "\$env:FZM_LOG=''debug''; Start-Process -FilePath ''{{.RELEASE_EXE}}''"'
+      - cmd: echo "Running. Watch it with 'task logs -- -Wait'; stop with 'task stop'."
+        silent: true
+
+  upstream:check:
+    desc: Diff the PowerToys FancyZones files we mirror against upstream (pass `-- -Ref v0.103.0` for a release); exit 1 = review needed
+    cmds:
+      - powershell -NoProfile -ExecutionPolicy Bypass -File scripts/upstream-check.ps1 {{.CLI_ARGS}}
+
+  upstream:accept:
+    desc: Re-pin the upstream baseline after reviewing changes and updating the port
+    cmds:
+      - powershell -NoProfile -ExecutionPolicy Bypass -File scripts/upstream-check.ps1 -Update {{.CLI_ARGS}}
+
+  install:
+    desc: Build the installer and install it silently (per-user, starts with Windows, starts now)
+    deps: [package:installer]
+    cmds:
+      - '"dist\{{.BIN}}-{{.VERSION}}-x64-setup.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS=autostart'
+      - cmd: echo "Installed {{.INSTALLED_EXE}} (v{{.VERSION}}); it is running and starts with Windows."
+        silent: true
+
+  uninstall:
+    desc: Uninstall silently via the installer's uninstaller (config and logs are kept)
+    cmds:
+      - task: stop
+      - '{{.PS}} "$u = ''{{.INSTALL_DIR}}\unins000.exe''; if (Test-Path $u) { Start-Process -Wait -FilePath $u -ArgumentList ''/VERYSILENT'',''/SUPPRESSMSGBOXES'',''/NORESTART'' } else { ''not installed'' }"'
+
+  start:
+    desc: Start the installed copy in the background
+    preconditions:
+      - sh: '{{.PS}} "if (-not (Test-Path ''{{.INSTALLED_EXE}}'')) { exit 1 }"'
+        msg: 'Not installed — run `task install` first'
+    cmds:
+      - '{{.PS}} "Start-Process -FilePath ''{{.INSTALLED_EXE}}''"'
+
+  stop:
+    desc: Stop any running instance
+    cmds:
+      - cmd: cargo run -q -- --quit
+        ignore_error: true
+      - '{{.PS}} "Start-Sleep -Milliseconds 500"'
+
+  restart:
+    desc: Restart the installed copy
+    cmds:
+      - task: stop
+      - task: start
+
+  logs:
+    desc: Show the last 50 log lines (pass `-- -Wait` to follow)
+    cmds:
+      - '{{.PS}} "Get-Content -Tail 50 ''{{.LOG_FILE}}'' {{.CLI_ARGS}}"'
+
+  settings:
+    desc: Open the settings window of the running fz-maximize
+    cmds:
+      - cargo run -q -- --settings
+
+  config:
+    desc: Open the config file in Notepad (created with commented defaults if missing)
+    cmds:
+      - cargo run -q -- --init-config
+      - '{{.PS}} "Start-Process notepad.exe ''{{.CONFIG_FILE}}''"'
+      - cmd: echo "After editing, use the tray menu 'Reload' (or `task restart`)."
+        silent: true
+
+  setup:installer:
+    desc: Install Inno Setup (per-user, via winget), needed for package:installer
+    cmds:
+      - winget install -e --id JRSoftware.InnoSetup --scope user --accept-package-agreements --accept-source-agreements
+
+  package:
+    desc: Build everything a release ships — installer and portable zip — into dist/
+    cmds:
+      - task: package:installer
+      - task: package:zip
+
+  package:installer:
+    desc: Build dist/fz-maximize-<version>-x64-setup.exe (+ .sha256); signed if FZM_SIGN_COMMAND is set
+    deps: [build:release]
+    sources:
+      - '{{.RELEASE_EXE}}'
+      - installer/fz-maximize.iss
+      - scripts/build-installer.ps1
+      - README.md
+      - LICENSE
+      - THIRD_PARTY_NOTICES.md
+    generates:
+      - 'dist/{{.BIN}}-{{.VERSION}}-x64-setup.exe'
+    cmds:
+      - powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-installer.ps1 -Version {{.VERSION}} -Arch x64 -ExePath {{.RELEASE_EXE}}
+
+  package:installer:arm64:
+    desc: Build the ARM64 installer
+    deps: [build:arm64]
+    cmds:
+      - powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-installer.ps1 -Version {{.VERSION}} -Arch arm64 -ExePath target/{{.ARM64_TARGET}}/release/{{.BIN}}.exe
+
+  package:zip:
+    desc: Zip the portable release exe + docs into dist/
+    deps: [build:release]
+    vars:
+      ZIP: dist/{{.BIN}}-{{.VERSION}}-x64-portable.zip
+    cmds:
+      - '{{.PS}} "New-Item -ItemType Directory -Force -Path dist | Out-Null; Compress-Archive -Force -Path ''{{.RELEASE_EXE}}'',README.md,LICENSE,THIRD_PARTY_NOTICES.md,docs -DestinationPath ''{{.ZIP}}''"'
+      - cmd: echo "Created {{.ZIP}}"
+        silent: true
+
+  ci:
+    desc: Full CI pipeline — checks, release build and installer
+    cmds:
+      - task: check
+      - task: build:release
+      - task: package
+
+  clean:
+    desc: Remove build outputs
+    cmds:
+      - cargo clean
+      - '{{.PS}} "if (Test-Path dist) { Remove-Item -Recurse -Force dist }"'

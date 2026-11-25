@@ -1,0 +1,17 @@
+# "Hybrid CRT" (the same approach PowerToys uses, see its Cpp.Build.props):
+# link the Visual C++ runtime statically so the exe does not need VCRUNTIME140.dll
+# (the Visual C++ Redistributable), but keep using the Universal CRT that ships with
+# Windows 10/11 (ucrtbase.dll) instead of a static copy.
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-C", "link-arg=/NODEFAULTLIB:libucrt.lib",
+    "-C", "link-arg=/DEFAULTLIB:ucrt.lib",
+]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-C", "link-arg=/NODEFAULTLIB:libucrt.lib",
+    "-C", "link-arg=/DEFAULTLIB:ucrt.lib",
+]

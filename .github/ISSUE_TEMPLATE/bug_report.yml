@@ -1,0 +1,30 @@
+name: Bug report
+description: Something doesn't maximize/snap the way it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: Which gesture (Maximize button, title-bar double-click, Win+Up, drag to top, hotkey) and which app?
+    validations:
+      required: true
+  - type: textarea
+    id: dump
+    attributes:
+      label: Output of `fz-maximize --dump`
+      description: Monitors, matched FancyZones layout and zones. Run it in a terminal (pipe it, e.g. `fz-maximize --dump | Out-String`).
+      render: text
+  - type: textarea
+    id: log
+    attributes:
+      label: Relevant log lines
+      description: From `%LOCALAPPDATA%\fz-maximize\fz-maximize.log` (set Log detail to "debug" in Settings first if you can).
+      render: text
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: fz-maximize, PowerToys, Windows (e.g. 0.1.0 / v0.102 / Windows 11 24H2)
+    validations:
+      required: true

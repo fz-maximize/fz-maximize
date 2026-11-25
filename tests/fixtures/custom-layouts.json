@@ -1,0 +1,5 @@
+{"custom-layouts":[
+{"uuid":"{A1B2C3D4-0000-4000-8000-000000000001}","name":"Ultrawide 25/50/25 split","type":"grid","info":{"rows":2,"columns":3,"rows-percentage":[5000,5000],"columns-percentage":[2500,5000,2500],"cell-child-map":[[0,1,2],[3,1,4]],"show-spacing":true,"spacing":8,"sensitivity-radius":20}},
+{"uuid":"{A1B2C3D4-0000-4000-8000-000000000002}","name":"Canvas thirds","type":"canvas","info":{"ref-width":3840,"ref-height":1080,"zones":[{"X":0,"Y":0,"width":960,"height":1080},{"X":960,"Y":0,"width":1920,"height":1080},{"X":2880,"Y":0,"width":960,"height":1080}],"sensitivity-radius":20}},
+{"uuid":"{A1B2C3D4-0000-4000-8000-000000000003}","name":"Broken grid","type":"grid","info":{"rows":2,"columns":2,"rows-percentage":[10000],"columns-percentage":[5000,5000],"cell-child-map":[[0,1]]}}
+]}

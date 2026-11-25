@@ -92,9 +92,23 @@ task package
 
 ## Release checklist
 
-1. Bump `version` in `Cargo.toml`.
-2. `task ci`: checks, tests, release build and installer.
-3. `task e2e` on a desktop with FancyZones (live behavior).
+1. Bump `version` in `Cargo.toml` (and `cargo build` so `Cargo.lock` updates), commit.
+2. `task ci` locally: checks, tests, release build and installer.
+3. `task e2e` on a desktop with FancyZones (live behavior; CI can't run this).
 4. `task upstream:check` against the PowerToys version you're shipping for.
-5. Sign (once configured), tag `v<ver>`, publish the GitHub Release with the `dist\` files.
+5. Tag and push: `git tag v<ver>` then `git push origin main v<ver>`.
+   The **Release** workflow (`.github/workflows/release.yml`) then:
+   * checks that the tag matches `Cargo.toml`;
+   * runs `task check` and `task package` on a clean Windows runner;
+   * (once SignPath is set up) signs the exe and installer;
+   * writes `SHA256SUMS.txt` and a build-provenance attestation;
+   * publishes the GitHub Release (as `github-actions`) with the installer, portable
+     zip and checksums. Tags with a `-` (e.g. `v0.2.0-beta.1`) become pre-releases.
 6. Update the winget manifest (and the Store listing, once it exists).
+
+To test the pipeline without publishing: Actions → **Release** → **Run workflow**. It
+builds everything and attaches the files to the run as an artifact, and creates no
+release.
+
+**CI** (`.github/workflows/ci.yml`) runs fmt, clippy and the unit tests on every push to
+`main` and every pull request.

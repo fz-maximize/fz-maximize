@@ -1,0 +1,37 @@
+# Formatting, lint and unit tests on every push to main and every pull request.
+# (The live desktop tests in tests/e2e.rs need a real desktop with FancyZones; run them
+# locally with `task e2e`.)
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+        with:
+          version: 3.x
+
+      - name: Rust toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      - name: fmt + clippy + unit tests
+        run: task check

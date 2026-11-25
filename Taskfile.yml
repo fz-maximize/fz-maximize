@@ -12,7 +12,7 @@ vars:
   CONFIG_FILE: '{{.APPDATA}}\{{.BIN}}\config.toml'
   VERSION:
     # pkgid looks like `path+file:///C:/.../fz-maximize#0.1.0`; keep what follows the last # or @
-    sh: 'id=$(cargo pkgid --offline); echo "${id##*[#@]}"'
+    sh: 'id=$(cargo pkgid --offline 2>/dev/null || cargo pkgid); echo "${id##*[#@]}"'
   PS: powershell -NoProfile -ExecutionPolicy Bypass -Command
 
 tasks:

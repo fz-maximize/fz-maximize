@@ -1,12 +1,12 @@
 //! Monitor identity and layout lookup, ported from FancyZones
 //! (`FancyZonesDataTypes.h` equality operators and `MonitorUtils.cpp` id parsing).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::model::AppliedLayout;
 
 /// `FancyZonesDataTypes::DeviceId`
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceId {
     /// PnP hardware id, e.g. `SAM73CE`, or `\\.\DISPLAY1` for legacy / fallback ids.
     pub id: String,
@@ -17,7 +17,7 @@ pub struct DeviceId {
 }
 
 /// `FancyZonesDataTypes::MonitorId` (without the live `HMONITOR`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MonitorId {
     pub device: DeviceId,
     /// EDID serial as FancyZones/WMI report it (`SerialNumberID`), may be empty.

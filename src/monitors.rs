@@ -5,7 +5,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use windows::Win32::Foundation::{LPARAM, RECT};
+use windows::Win32::Devices::Display::{
+    DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+    DISPLAYCONFIG_DEVICE_INFO_HEADER, DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO,
+    DISPLAYCONFIG_SOURCE_DEVICE_NAME, DISPLAYCONFIG_TARGET_DEVICE_NAME, DisplayConfigGetDeviceInfo,
+    GetDisplayConfigBufferSizes, QDC_ONLY_ACTIVE_PATHS, QueryDisplayConfig,
+};
+use windows::Win32::Foundation::{ERROR_SUCCESS, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
     DISPLAY_DEVICE_ACTIVE, DISPLAY_DEVICE_MIRRORING_DRIVER, DISPLAY_DEVICEW, EnumDisplayDevicesW, EnumDisplayMonitors,
     GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
@@ -33,12 +39,86 @@ pub struct MonitorCache {
     ids: HashMap<(isize, String), MonitorId>,
     /// Displays whose fallback id was already logged (avoid repeating it per maximize).
     fallback_logged: HashSet<String>,
+    /// Last identity Windows reported for each display (loaded on first use).
+    known: Option<Vec<KnownMonitor>>,
+}
+
+/// The last identity Windows reported for a display, remembered (and saved to
+/// `%LOCALAPPDATA%\fz-maximize\monitors.json`) because Windows sometimes can't report it:
+/// on some PCs the monitor's device briefly disappears from every display API (seen on a
+/// hybrid-GPU laptop). FancyZones isn't affected (it keeps the identity it read when it
+/// started), so falling back to the display name would pick a different FancyZones layout
+/// entry than FancyZones uses.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct KnownMonitor {
+    pub device_name: String,
+    /// Monitor bounds when it was identified: a different monitor that takes over the same
+    /// display name (after unplugging one) almost always differs here.
+    pub bounds: [i32; 4],
+    pub id: MonitorId,
+}
+
+fn bounds_of(r: &Rect) -> [i32; 4] {
+    [r.left, r.top, r.right, r.bottom]
+}
+
+/// Record `id` for display `device_name` with `bounds`. True when something changed.
+pub fn remember(known: &mut Vec<KnownMonitor>, device_name: &str, bounds: [i32; 4], id: &MonitorId) -> bool {
+    let entry = KnownMonitor {
+        device_name: device_name.to_string(),
+        bounds,
+        id: id.clone(),
+    };
+    match known.iter_mut().find(|k| k.device_name == device_name) {
+        Some(k) if *k == entry => false,
+        Some(k) => {
+            *k = entry;
+            true
+        }
+        None => {
+            known.push(entry);
+            true
+        }
+    }
+}
+
+/// The remembered identity for display `device_name`, if it still has the same bounds.
+pub fn recall(known: &[KnownMonitor], device_name: &str, bounds: [i32; 4]) -> Option<MonitorId> {
+    known
+        .iter()
+        .find(|k| k.device_name == device_name && k.bounds == bounds)
+        .map(|k| k.id.clone())
+}
+
+fn known_path() -> Option<std::path::PathBuf> {
+    crate::logging::log_dir().map(|d| d.join("monitors.json"))
 }
 
 impl MonitorCache {
     pub fn clear(&mut self) {
         self.ids.clear();
         self.fallback_logged.clear();
+    }
+
+    fn known(&mut self) -> &mut Vec<KnownMonitor> {
+        self.known.get_or_insert_with(|| {
+            known_path()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or_default()
+        })
+    }
+
+    fn save_known(&mut self) {
+        let Some(path) = known_path() else { return };
+        let text = serde_json::to_string_pretty(self.known()).unwrap_or_default();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, text).is_ok() {
+            let _ = std::fs::rename(tmp, path);
+        }
     }
 
     /// Describe the monitor `hwnd` is on (nearest).
@@ -54,15 +134,32 @@ impl MonitorCache {
             Some(id) => id.clone(),
             None => {
                 let (id, reliable) = identify(&device_name);
+                let bounds = bounds_of(&rc_monitor);
                 if reliable {
                     self.ids.insert(key, id.clone());
-                } else if self.fallback_logged.insert(device_name.clone()) {
-                    tracing::info!(
-                        device_name = %device_name,
-                        "display driver reports no monitor device; using the display name as id (same fallback as FancyZones)"
-                    );
+                    if remember(self.known(), &device_name, bounds, &id) {
+                        self.save_known();
+                    }
+                    id
+                } else if let Some(known) = recall(self.known(), &device_name, bounds) {
+                    // Not cached: the next lookup asks Windows again.
+                    if self.fallback_logged.insert(device_name.clone()) {
+                        tracing::info!(
+                            device_name = %device_name,
+                            monitor = %known.device.id,
+                            "Windows reports no identity for this monitor right now; using the one it reported last"
+                        );
+                    }
+                    known
+                } else {
+                    if self.fallback_logged.insert(device_name.clone()) {
+                        tracing::info!(
+                            device_name = %device_name,
+                            "display driver reports no monitor device; using the display name as id (same fallback as FancyZones)"
+                        );
+                    }
+                    id
                 }
-                id
             }
         };
         Some(LiveMonitor {
@@ -155,6 +252,27 @@ fn identify(device_name: &str) -> (MonitorId, bool) {
         index += 1;
     }
 
+    // EnumDisplayDevices sometimes returns nothing at all (seen on a hybrid-GPU laptop,
+    // error 203 for the very first adapter) while FancyZones, which identified the
+    // monitor earlier and keeps it, is unaffected. Using the display-name fallback then
+    // would pick a different (often stale) FancyZones layout entry, so ask the display
+    // configuration API, which reports the same monitor device path.
+    if let Some(path) = monitor_path_via_display_config(device_name) {
+        let mut device = split_display_device_id(&path);
+        if !device.instance_id.is_empty() {
+            device.number = number_from_device_name(device_name).unwrap_or(0);
+            let serial = read_edid(&device.id, &device.instance_id)
+                .and_then(|e| edid_serial(&e))
+                .unwrap_or_default();
+            tracing::debug!(
+                device_name,
+                path,
+                "monitor identified via the display configuration API"
+            );
+            return (MonitorId { device, serial }, true);
+        }
+    }
+
     // FancyZones' fallback when no active device is found: the display name itself.
     (
         MonitorId {
@@ -167,6 +285,69 @@ fn identify(device_name: &str) -> (MonitorId, bool) {
         },
         false,
     )
+}
+
+/// The monitor device path (`\\?\DISPLAY#BOE0A52#4&a918e15&0&UID8388688#{...}`, the same
+/// string `EnumDisplayDevices` gives with `EDD_GET_DEVICE_INTERFACE_NAME`) of the monitor
+/// shown on GDI display `device_name` (`\\.\DISPLAY1`), from the display configuration
+/// (CCD) API.
+fn monitor_path_via_display_config(device_name: &str) -> Option<String> {
+    let (mut paths_len, mut modes_len) = (0u32, 0u32);
+    let rc = unsafe { GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut paths_len, &mut modes_len) };
+    if rc != ERROR_SUCCESS {
+        tracing::debug!(rc = rc.0, "GetDisplayConfigBufferSizes failed");
+        return None;
+    }
+    let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); paths_len as usize];
+    let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); modes_len as usize];
+    let rc = unsafe {
+        QueryDisplayConfig(
+            QDC_ONLY_ACTIVE_PATHS,
+            &mut paths_len,
+            paths.as_mut_ptr(),
+            &mut modes_len,
+            modes.as_mut_ptr(),
+            None,
+        )
+    };
+    if rc != ERROR_SUCCESS {
+        tracing::debug!(rc = rc.0, "QueryDisplayConfig failed");
+        return None;
+    }
+    paths.truncate(paths_len as usize);
+    tracing::debug!(paths = paths.len(), "display configuration paths");
+    for p in &paths {
+        let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+            header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+                adapterId: p.sourceInfo.adapterId,
+                id: p.sourceInfo.id,
+            },
+            ..Default::default()
+        };
+        if unsafe { DisplayConfigGetDeviceInfo(&mut source.header) } != 0
+            || !from_wide(&source.viewGdiDeviceName).eq_ignore_ascii_case(device_name)
+        {
+            continue;
+        }
+        let mut target = DISPLAYCONFIG_TARGET_DEVICE_NAME {
+            header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+                size: std::mem::size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32,
+                adapterId: p.targetInfo.adapterId,
+                id: p.targetInfo.id,
+            },
+            ..Default::default()
+        };
+        if unsafe { DisplayConfigGetDeviceInfo(&mut target.header) } == 0 {
+            let path = from_wide(&target.monitorDevicePath);
+            if !path.is_empty() {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 /// `HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\<id>\<instance>\Device Parameters\EDID`
@@ -226,6 +407,53 @@ pub fn edid_serial(edid: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn known_monitors_are_remembered_and_recalled() {
+        let id = MonitorId {
+            device: DeviceId {
+                id: "BOE0A52".into(),
+                instance_id: "4&a918e15&0&UID8388688".into(),
+                number: 1,
+            },
+            serial: "0".into(),
+        };
+        let mut known = Vec::new();
+        let b = [0, 0, 3840, 2400];
+        let display1 = r"\\.\DISPLAY1";
+        assert!(remember(&mut known, display1, b, &id));
+        assert!(!remember(&mut known, display1, b, &id), "unchanged: no save");
+        assert_eq!(recall(&known, display1, b), Some(id.clone()));
+        assert_eq!(recall(&known, display1, [0, 0, 1920, 1080]), None, "different monitor");
+        assert_eq!(recall(&known, r"\\.\DISPLAY2", b), None);
+        // A newer identity for the same display replaces the old one.
+        let other = MonitorId {
+            serial: "7".into(),
+            ..id.clone()
+        };
+        assert!(remember(&mut known, display1, b, &other));
+        assert_eq!((known.len(), recall(&known, display1, b)), (1, Some(other)));
+        // Survives a save and load (including the backslashes in display names).
+        let text = serde_json::to_string(&known).unwrap();
+        let back: Vec<KnownMonitor> = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, known);
+        assert_eq!(back[0].device_name, display1);
+    }
+
+    /// Live diagnostic: what Windows reports for every display, and what we end up using.
+    #[test]
+    #[ignore = "reads the live display configuration"]
+    fn diagnose_identification() {
+        for h in enumerate_handles() {
+            let (name, ..) = monitor_info(h).unwrap();
+            let (id, reliable) = identify(&name);
+            eprintln!("{name}: Windows reports {id:?} (reliable: {reliable})");
+            let path = monitor_path_via_display_config(&name);
+            eprintln!("{name}: display configuration path {path:?}");
+            let used = MonitorCache::default().describe(h).map(|m| m.desc.id);
+            eprintln!("{name}: using {used:?}");
+        }
+    }
 
     fn base_edid(header_serial: u32) -> Vec<u8> {
         let mut e = vec![0u8; 128];

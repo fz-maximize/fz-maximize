@@ -27,6 +27,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 [dependencies.windows]
 version = "0.62"
 features = [
+    "Win32_Devices_Display",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",

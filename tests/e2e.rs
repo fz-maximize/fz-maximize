@@ -1364,3 +1364,159 @@ fn zone_window_rect(h: HWND, zone: &R) -> R {
         b: zone.b + (w.b - f.b),
     }
 }
+
+/// One screen row `[x0, x1)` at `y`, as 0x00RRGGBB pixels.
+fn capture_row(x0: i32, x1: i32, y: i32) -> Vec<u32> {
+    use windows::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleBitmap, CreateCompatibleDC,
+        DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, HGDIOBJ, ROP_CODE, ReleaseDC, SRCCOPY, SelectObject,
+    };
+    let w = x1 - x0;
+    let mut px = vec![0u32; w as usize];
+    unsafe {
+        let screen = GetDC(None);
+        let mem = CreateCompatibleDC(Some(screen));
+        let bmp = CreateCompatibleBitmap(screen, w, 1);
+        let old = SelectObject(mem, HGDIOBJ(bmp.0));
+        let _ = BitBlt(mem, 0, 0, w, 1, Some(screen), x0, y, ROP_CODE(SRCCOPY.0 | CAPTUREBLT.0));
+        let mut bi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -1,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        GetDIBits(mem, bmp, 0, 1, Some(px.as_mut_ptr().cast()), &mut bi, DIB_RGB_COLORS);
+        SelectObject(mem, old);
+        let _ = DeleteObject(HGDIOBJ(bmp.0));
+        let _ = DeleteDC(mem);
+        ReleaseDC(None, screen);
+    }
+    px.iter_mut().for_each(|p| *p &= 0x00FF_FFFF);
+    px
+}
+
+/// The near-white run in `row` that contains index `at`: (start, end) indices.
+fn white_run(row: &[u32], at: usize) -> Option<(usize, usize)> {
+    let white = |p: u32| (p >> 16 & 0xFF) > 0xF0 && (p >> 8 & 0xFF) > 0xF0 && (p & 0xFF) > 0xF0;
+    if !white(*row.get(at)?) {
+        return None;
+    }
+    let mut l = at;
+    while l > 0 && white(row[l - 1]) {
+        l -= 1;
+    }
+    let mut r = at;
+    while r + 1 < row.len() && white(row[r + 1]) {
+        r += 1;
+    }
+    Some((l, r + 1))
+}
+
+/// Sample the width of Notepad's white client area on one row for `span`.
+fn sample_widths(x0: i32, x1: i32, y: i32, at: usize, span: Duration, kick: impl FnOnce()) -> Vec<(f64, usize)> {
+    let mut samples = Vec::new();
+    let start = Instant::now();
+    kick();
+    while start.elapsed() < span {
+        let row = capture_row(x0, x1, y);
+        if let Some((l, r)) = white_run(&row, at) {
+            samples.push((start.elapsed().as_secs_f64() * 1000.0, r - l));
+        }
+    }
+    samples
+}
+
+/// Describe one measured animation: duration and progress at fractions of it.
+fn report_animation(what: &str, samples: &[(f64, usize)]) {
+    let (w0, w1) = (samples[0].1 as f64, samples.last().unwrap().1 as f64);
+    let moving: Vec<_> = samples.iter().filter(|s| (s.1 as f64 - w0).abs() > 2.0).collect();
+    let settled = samples
+        .iter()
+        .position(|s| (s.1 as f64 - w1).abs() <= 2.0 && s.0 > moving.first().map_or(0.0, |m| m.0));
+    let (Some(first), Some(end)) = (moving.first(), settled.map(|i| samples[i])) else {
+        eprintln!("{what}: no animation seen (are Windows animations on?)");
+        return;
+    };
+    // The last sample before movement bounds the true start.
+    let before = samples.iter().rfind(|s| s.0 < first.0).map_or(0.0, |s| s.0);
+    let start = (before + first.0) / 2.0;
+    let dur = end.0 - start;
+    eprintln!(
+        "{what}: width {w0} -> {w1} px; motion starts ~{start:.0} ms after the command, lasts ~{dur:.0} ms ({} samples, ~{:.1} ms apart)",
+        samples.len(),
+        samples.last().unwrap().0 / samples.len() as f64
+    );
+    eprintln!("{what}: progress at fraction of duration (measured | ease-out cubic):");
+    for s in samples.iter().filter(|s| s.0 >= start && s.0 <= end.0) {
+        let t = (s.0 - start) / dur;
+        let p = (s.1 as f64 - w0) / (w1 - w0);
+        let ease = 1.0 - (1.0 - t).powi(3);
+        eprintln!("  t={t:.2}  measured={p:.2}  cubic={ease:.2}");
+    }
+}
+
+#[test]
+#[ignore = "measures Windows' own maximize animation; run alone, with fz-maximize stopped"]
+fn measure_windows_maximize_animation() {
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        HWND_TOPMOST, SC_MAXIMIZE, SC_RESTORE, SWP_NOACTIVATE, SetWindowPos, WM_SYSCOMMAND,
+    };
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+    if unsafe { FindWindowW(w!("fz-maximize.hidden-window"), None) }.is_ok() {
+        eprintln!("SKIP: fz-maximize is running (it would intercept the maximize); task stop first");
+        return;
+    }
+    let mut notepad = Command::new("notepad.exe").spawn().expect("start notepad");
+    let pid = notepad.id();
+    let mut hwnd = None;
+    assert!(wait_until(Duration::from_secs(5), || {
+        hwnd = find_notepad(pid);
+        hwnd.is_some()
+    }));
+    let h = hwnd.unwrap();
+    let mut mi = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        let _ = GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mut mi);
+    }
+    let work = mi.rcWork;
+    let (ww, wh) = ((work.right - work.left) / 4, (work.bottom - work.top) / 4);
+    let (x, y) = (
+        work.left + (work.right - work.left) * 3 / 8,
+        work.top + (work.bottom - work.top) * 3 / 8,
+    );
+    unsafe {
+        let _ = SetWindowPos(h, Some(HWND_TOPMOST), x, y, ww, wh, SWP_NOACTIVATE);
+    }
+    force_foreground(h);
+    std::thread::sleep(Duration::from_millis(800));
+    let row_y = y + wh / 2;
+    let at = (x + ww / 2 - work.left) as usize;
+    let span = Duration::from_millis(900);
+    let post = |cmd: u32| unsafe {
+        let _ = PostMessageW(Some(h), WM_SYSCOMMAND, WPARAM(cmd as usize), LPARAM(0));
+    };
+
+    let max = sample_widths(work.left, work.right, row_y, at, span, || post(SC_MAXIMIZE));
+    std::thread::sleep(Duration::from_millis(500));
+    let restore = sample_widths(work.left, work.right, row_y, at, span, || post(SC_RESTORE));
+    unsafe {
+        let _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0));
+    }
+    if !wait_until(Duration::from_secs(2), || notepad.try_wait().ok().flatten().is_some()) {
+        let _ = notepad.kill();
+    }
+    report_animation("maximize", &max);
+    report_animation("restore", &restore);
+}

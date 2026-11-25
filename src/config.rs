@@ -39,6 +39,11 @@ pub enum BypassModifier {
     None,
 }
 
+/// Length of Windows' own maximize animation, used when `animation_match_windows` is on.
+/// Windows has no setting or API for it (only on/off switches), so this is measured:
+/// 217-219 ms on Windows 10 22H2 (`measure_windows_maximize_animation` in tests/e2e.rs).
+pub const WINDOWS_ANIMATION_MS: u32 = 215;
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -51,10 +56,12 @@ pub struct Config {
     pub preempt_mouse_maximize: bool,
     /// Intercept Win+Up the same way (low-level keyboard hook).
     pub preempt_win_up: bool,
-    /// Animate intercepted maximizes into the zone (a live preview, like Windows' own
-    /// maximize animation). Skipped automatically when Windows' animation effects are off.
+    /// Animate intercepted maximizes into the zone. Skipped automatically when Windows
+    /// wouldn't animate a maximize itself (either of its animation switches is off).
     pub animate_maximize: bool,
-    /// Animation length in milliseconds (50-1000).
+    /// Use the length of Windows' own maximize animation ([`WINDOWS_ANIMATION_MS`]).
+    pub animation_match_windows: bool,
+    /// Animation length in milliseconds (50-1000) when not matching Windows.
     pub animation_ms: u32,
     /// Win + bypass modifier + Up (Win+Shift+Up by default) does a normal full-monitor
     /// maximize, like Shift + maximize button. Replaces Windows' own Win+Shift+Up
@@ -95,6 +102,7 @@ impl Default for Config {
             preempt_mouse_maximize: true,
             preempt_win_up: true,
             animate_maximize: true,
+            animation_match_windows: true,
             animation_ms: 200,
             win_up_bypass: true,
             hotkey: "Ctrl+Alt+Up".into(),
@@ -135,9 +143,13 @@ snap_on_drag_maximize = true
 preempt_mouse_maximize = true
 preempt_win_up = true
 
-# Animate the window into its zone, like Windows' own maximize animation (only for the
-# gestures above; skipped when animations are turned off in Windows).
+# Animate the window into its zone (only for the gestures above). Skipped whenever
+# Windows wouldn't animate a maximize itself: "Animation effects" (Settings >
+# Accessibility > Visual effects) or "Animate windows when minimizing and maximizing"
+# (System Properties > Performance Options) is off.
 animate_maximize = true
+# Take as long as Windows' own maximize animation; false = use animation_ms instead.
+animation_match_windows = true
 animation_ms = 200
 
 # Win + the bypass modifier + Up (Win+Shift+Up by default) gives a normal full-monitor
@@ -410,9 +422,31 @@ fn key_code(k: &str) -> Option<u32> {
     })
 }
 
+impl Config {
+    /// How long an intercepted maximize animates.
+    pub fn animation_duration(&self) -> std::time::Duration {
+        let ms = if self.animation_match_windows {
+            WINDOWS_ANIMATION_MS
+        } else {
+            self.animation_ms
+        };
+        std::time::Duration::from_millis(u64::from(ms))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn animation_length_follows_windows_unless_overridden() {
+        let mut c = Config::default();
+        assert!(c.animation_match_windows, "matching Windows is the default");
+        assert_eq!(c.animation_duration().as_millis(), u128::from(WINDOWS_ANIMATION_MS));
+        c.animation_match_windows = false;
+        c.animation_ms = 400;
+        assert_eq!(c.animation_duration().as_millis(), 400);
+    }
 
     #[test]
     fn template_is_the_default_config() {
@@ -433,6 +467,7 @@ mod tests {
             preempt_mouse_maximize: false,
             preempt_win_up: false,
             animate_maximize: false,
+            animation_match_windows: false,
             animation_ms: 333,
             win_up_bypass: false,
             hotkey: "Win+Shift+F12".into(),

@@ -284,7 +284,7 @@ impl App {
                         target: hwnd_key(hwnd),
                         from,
                         to: target,
-                        duration: Duration::from_millis(u64::from(self.config.animation_ms)),
+                        duration: self.config.animation_duration(),
                         all_monitors_same_dpi: same_dpi,
                     });
                     return Ok(());

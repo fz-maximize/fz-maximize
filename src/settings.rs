@@ -22,7 +22,7 @@ use windows::Win32::UI::Controls::{
     HOTKEYF_EXT, HOTKEYF_SHIFT, ICC_HOTKEY_CLASS, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
 };
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, SystemParametersInfoForDpi};
-use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_PUSHBUTTON, CB_ADDSTRING,
     CB_GETCURSEL, CB_SETCURSEL, CBS_DROPDOWNLIST, CreateWindowExW, DefWindowProcW, DestroyWindow, ES_AUTOHSCROLL,
@@ -111,6 +111,7 @@ const ID_PRE_WINUP: i32 = 121;
 const ID_WINUP_BYPASS: i32 = 122;
 const ID_ANIMATE: i32 = 123;
 const ID_ANIM_MS: i32 = 124;
+const ID_ANIM_MATCH: i32 = 125;
 const ID_ASPECT: i32 = 130;
 const ID_MONITORS: i32 = 131;
 const ID_APPS: i32 = 132;
@@ -298,7 +299,8 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
         ID_ANIMATE,
         "Animate the window into its zone (like Windows' own maximize)",
     );
-    b.labeled("Animation length (milliseconds, 50-1000):", ID_ANIM_MS, Ctl::Edit, 70);
+    b.check(ID_ANIM_MATCH, "Match Windows' animation speed");
+    b.labeled("Otherwise, length (milliseconds, 50-1000):", ID_ANIM_MS, Ctl::Edit, 70);
     b.hint("Caught early, windows go straight to their zone without the maximize animation.");
     b.hint("The Win + key + Up option replaces Windows' own Win+Shift+Up (stretch vertically).");
     b.end_group();
@@ -464,6 +466,17 @@ fn send(h: HWND, msg: u32, w: usize, l: isize) -> isize {
     unsafe { SendMessageW(h, msg, Some(WPARAM(w)), Some(LPARAM(l))) }.0
 }
 
+/// The speed options only matter when animating; the length box only when not matching
+/// Windows.
+fn update_animation_controls(hwnd: HWND) {
+    let animate = checked(hwnd, ID_ANIMATE);
+    let custom = animate && !checked(hwnd, ID_ANIM_MATCH);
+    unsafe {
+        let _ = EnableWindow(item(hwnd, ID_ANIM_MATCH), animate);
+        let _ = EnableWindow(item(hwnd, ID_ANIM_MS), custom);
+    }
+}
+
 fn set_check(hwnd: HWND, id: i32, on: bool) {
     send(item(hwnd, id), BM_SETCHECK, usize::from(on), 0);
 }
@@ -594,7 +607,9 @@ fn fill(hwnd: HWND, ctx: &Context) {
     set_check(hwnd, ID_PRE_WINUP, c.preempt_win_up);
     set_check(hwnd, ID_WINUP_BYPASS, c.win_up_bypass);
     set_check(hwnd, ID_ANIMATE, c.animate_maximize);
+    set_check(hwnd, ID_ANIM_MATCH, c.animation_match_windows);
     set_text(hwnd, ID_ANIM_MS, &c.animation_ms.to_string());
+    update_animation_controls(hwnd);
     set_check(hwnd, ID_FZ_EXCLUDED, c.respect_fancyzones_excluded_apps);
     set_check(hwnd, ID_FZ_DEFAULT, c.use_fancyzones_default_layout);
     set_check(hwnd, ID_FZ_REQUIRE, c.require_fancyzones_enabled);
@@ -628,11 +643,14 @@ fn read(hwnd: HWND) -> Result<(Config, bool), String> {
             .parse()
             .map_err(|_| format!("'{aspect_text}' is not a number (monitor width / height)."))?
     };
+    let match_windows = checked(hwnd, ID_ANIM_MATCH);
     let ms_text = text(hwnd, ID_ANIM_MS);
-    let animation_ms: u32 = ms_text
-        .trim()
-        .parse()
-        .map_err(|_| format!("'{ms_text}' is not a whole number of milliseconds (50-1000)."))?;
+    let animation_ms: u32 = match ms_text.trim().parse() {
+        Ok(ms) => ms,
+        // The box is greyed out while matching Windows: don't complain about it then.
+        Err(_) if match_windows => Config::default().animation_ms,
+        Err(_) => return Err(format!("'{ms_text}' is not a whole number of milliseconds (50-1000).")),
+    };
     let word = send(item(hwnd, ID_HOTKEY), HKM_GETHOTKEY, 0, 0) as u16;
     let cfg = Config {
         bypass_modifier: MODIFIERS[combo_index(hwnd, ID_MODIFIER).min(MODIFIERS.len() - 1)].1,
@@ -642,6 +660,7 @@ fn read(hwnd: HWND) -> Result<(Config, bool), String> {
         preempt_win_up: checked(hwnd, ID_PRE_WINUP),
         win_up_bypass: checked(hwnd, ID_WINUP_BYPASS),
         animate_maximize: checked(hwnd, ID_ANIMATE),
+        animation_match_windows: match_windows,
         animation_ms,
         hotkey: hotkey_from_control(word, checked(hwnd, ID_HOTKEY_WIN))?,
         min_aspect_ratio,
@@ -720,6 +739,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     ID_APPLY => {
                         apply(hwnd);
                     }
+                    ID_ANIMATE | ID_ANIM_MATCH => update_animation_controls(hwnd),
                     ID_OPEN_FILE => {
                         let path = STATE.with(|s| s.borrow().as_ref().map(|s| s.ctx.config_path.clone()));
                         if let Some(p) = path {

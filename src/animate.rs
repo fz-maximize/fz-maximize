@@ -42,12 +42,13 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GW_HWNDPREV, GWL_EXSTYLE, GetMessageW, GetWindow,
-    GetWindowLongPtrW, HTTRANSPARENT, HWND_TOP, HWND_TOPMOST, IsWindow, LWA_ALPHA, LWA_COLORKEY, MSG, PM_NOREMOVE,
-    PM_REMOVE, PeekMessageW, PostThreadMessageW, RegisterClassExW, SPI_GETCLIENTAREAANIMATION, SW_SHOWNOACTIVATE,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetLayeredWindowAttributes, SetWindowPos, ShowWindow,
-    SystemParametersInfoW, TranslateMessage, WM_APP, WM_ERASEBKGND, WM_NCHITTEST, WM_PAINT, WM_QUIT, WNDCLASSEXW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    ANIMATIONINFO, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GW_HWNDPREV, GWL_EXSTYLE,
+    GetMessageW, GetWindow, GetWindowLongPtrW, HTTRANSPARENT, HWND_TOP, HWND_TOPMOST, IsWindow, LWA_ALPHA,
+    LWA_COLORKEY, MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW, PostThreadMessageW, RegisterClassExW, SPI_GETANIMATION,
+    SPI_GETCLIENTAREAANIMATION, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetLayeredWindowAttributes,
+    SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage, WM_APP, WM_ERASEBKGND, WM_NCHITTEST, WM_PAINT,
+    WM_QUIT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    WS_POPUP,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
@@ -152,18 +153,35 @@ pub fn corners(dest: &Rect, src_w: i32, src_h: i32) -> [(Rect, Rect); 4] {
 // Animation thread
 // ---------------------------------------------------------------------------------------
 
-/// True when Windows' "Animation effects" (Settings → Accessibility → Visual effects) is on.
+/// True when Windows would animate a maximize itself, i.e. **both** of its switches are
+/// on: "Animation effects" (Settings → Accessibility → Visual effects) and "Animate
+/// windows when minimizing and maximizing" (System Properties → Performance Options).
+/// Read on every gesture, so changes apply immediately.
 pub fn system_animations_enabled() -> bool {
-    let mut on = BOOL(1);
-    let ok = unsafe {
+    let mut client_area = BOOL(1);
+    let client_ok = unsafe {
         SystemParametersInfoW(
             SPI_GETCLIENTAREAANIMATION,
             0,
-            Some((&mut on as *mut BOOL).cast()),
+            Some((&mut client_area as *mut BOOL).cast()),
             Default::default(),
         )
+    }
+    .is_ok();
+    let mut info = ANIMATIONINFO {
+        cbSize: std::mem::size_of::<ANIMATIONINFO>() as u32,
+        iMinAnimate: 1,
     };
-    ok.is_err() || on.as_bool()
+    let min_max_ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETANIMATION,
+            info.cbSize,
+            Some((&mut info as *mut ANIMATIONINFO).cast()),
+            Default::default(),
+        )
+    }
+    .is_ok();
+    (!client_ok || client_area.as_bool()) && (!min_max_ok || info.iMinAnimate != 0)
 }
 
 /// One animated move of `target` from `from` to `to` (window rects, screen coords). The

@@ -20,9 +20,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows, GA_ROOT, GetAncestor, GetCursorPos,
     GetForegroundWindow, GetMessageW, IsWindow, KillTimer, MSG, PostQuitMessage, RegisterClassExW,
-    RegisterWindowMessageW, SPI_SETWORKAREA, SW_MAXIMIZE, SW_RESTORE, SetTimer, ShowWindowAsync, TranslateMessage,
-    WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_SETTINGCHANGE,
-    WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    RegisterWindowMessageW, SPI_SETWORKAREA, SW_MAXIMIZE, SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SetTimer,
+    SetWindowPos, ShowWindowAsync, TranslateMessage, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE,
+    WM_HOTKEY, WM_LBUTTONDBLCLK, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
@@ -120,9 +120,16 @@ impl App {
     /// hop to every input event, so they shouldn't exist when unused).
     fn sync_input_hooks(&mut self) {
         let (mouse, win_up) = (self.config.preempt_mouse_maximize, self.config.preempt_win_up);
-        preempt::configure(mouse, win_up, self.config.win_up_bypass, self.config.bypass_modifier);
+        let lock = self.config.lock_zone_maximized;
+        preempt::configure(
+            mouse,
+            win_up,
+            self.config.win_up_bypass,
+            self.config.bypass_modifier,
+            lock,
+        );
         preempt::set_paused(self.engine.paused());
-        let wanted = mouse || win_up;
+        let wanted = mouse || win_up || lock;
         if wanted && self.input_hooks.is_none() {
             self.input_hooks = InputHooks::start(self.hwnd);
             if self.input_hooks.is_some() {
@@ -205,12 +212,58 @@ impl App {
         self.redirect(hwnd, normal, true, false, "maximize (corrected after the fact)", now);
     }
 
+    /// The user is dragging a locked (zone-maximized) window's title bar: like a truly
+    /// maximized window, it returns to its size from before the snap, under the cursor at
+    /// the same relative spot, and keeps moving with the mouse.
+    fn drag_restore(&mut self, hwnd: HWND, now: Instant) {
+        let key = hwnd_key(hwnd);
+        preempt::set_locked(key, None);
+        if let (Some(rec), Some(cur)) = (self.engine.snap_record(key), window::window_rect(hwnd))
+            && unsafe { IsWindow(Some(hwnd)) }.as_bool()
+        {
+            let mut cursor = POINT::default();
+            let _ = unsafe { GetCursorPos(&mut cursor) };
+            let size = (rec.pre_snap.width(), rec.pre_snap.height());
+            let restored = crate::engine::drag_restore_rect(&cur, size, point_from(cursor));
+            let moved = unsafe {
+                SetWindowPos(
+                    hwnd,
+                    None,
+                    restored.left,
+                    restored.top,
+                    restored.width(),
+                    restored.height(),
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            };
+            match moved {
+                Ok(()) => {
+                    self.engine.commit_restore(key, now);
+                    tracing::info!(hwnd = key, %restored, "drag to restore (locked window)");
+                }
+                Err(e) => tracing::debug!(hwnd = key, error = %e, "drag to restore failed"),
+            }
+        }
+        // Start the window's own move loop: press the button the user is holding. If they
+        // let go meanwhile, finish the click so the button isn't left pressed.
+        if preempt::left_button_held() {
+            preempt::inject_left_down();
+            if !preempt::left_button_held() {
+                preempt::inject_left_up();
+            }
+        }
+    }
+
     /// A gesture the input hooks intercepted before Windows maximized the window: it is
     /// still in its normal state, so placing it causes no maximize animation. Whenever
     /// we decide not to place it, perform the maximize the user asked for.
     fn on_intercepted(&mut self, hwnd: HWND, kind: Kind) {
         let now = Instant::now();
         let key = hwnd_key(hwnd);
+        if kind == Kind::DragRestore {
+            self.drag_restore(hwnd, now);
+            return;
+        }
         if kind == Kind::Bypassed {
             // Windows is about to maximize natively; make sure we leave it alone even if
             // the modifier is released before the maximize event reaches us.
@@ -380,6 +433,7 @@ impl App {
             } => match self.place(hwnd, target, same_dpi, animate) {
                 Ok(()) => {
                     self.engine.commit_snap(key, zone, target, pre_snap, now);
+                    preempt::set_locked(key, Some(target));
                     self.snaps += 1;
                     tracing::info!(
                         hwnd = key,
@@ -401,6 +455,7 @@ impl App {
             Decision::Restore { target } => match self.place(hwnd, target, same_dpi, animate) {
                 Ok(()) => {
                     self.engine.commit_restore(key, now);
+                    preempt::set_locked(key, None);
                     tracing::info!(hwnd = key, exe, %target, source, "restored to pre-snap size (toggle)");
                     true
                 }
@@ -431,6 +486,7 @@ impl App {
         match window::move_to(hwnd, target) {
             Ok(()) => {
                 self.engine.commit_correction(key, target);
+                preempt::set_locked(key, Some(target));
                 tracing::debug!(hwnd = key, frame = %fr, %zone, ?margins, "corrected frame after snap");
             }
             Err(e) => tracing::debug!(hwnd = key, error = %e, "frame correction failed"),
@@ -869,6 +925,7 @@ fn on_win_event(ev: WinEvent, hwnd: HWND) {
     match ev {
         WinEvent::Destroy => {
             with_app(|a| a.engine.forget(key));
+            preempt::set_locked(key, None);
         }
         WinEvent::Show => {
             if window::is_trackable(hwnd) {

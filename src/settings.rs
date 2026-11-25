@@ -109,6 +109,7 @@ const ID_OPEN_FILE: i32 = 101;
 const ID_MODIFIER: i32 = 110;
 const ID_ALREADY: i32 = 111;
 const ID_DRAG: i32 = 112;
+const ID_LOCK: i32 = 115;
 const ID_HOTKEY: i32 = 113;
 const ID_HOTKEY_WIN: i32 = 114;
 const ID_PRE_MOUSE: i32 = 120;
@@ -276,6 +277,10 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
     b.check(
         ID_DRAG,
         "Dragging a window to the top edge snaps it into the zone under the cursor",
+    );
+    b.check(
+        ID_LOCK,
+        "Lock zone-maximized windows (no resizing; dragging the title bar restores them)",
     );
     // Hotkey row: label, hotkey control, "+ Win" checkbox.
     let (x, iw) = (b.ix(), b.iw());
@@ -617,6 +622,7 @@ fn fill(hwnd: HWND, ctx: &Context) {
         .unwrap_or(2);
     fill_combo(hwnd, ID_LOGLEVEL, &LOG_LEVELS, level);
     set_check(hwnd, ID_DRAG, c.snap_on_drag_maximize);
+    set_check(hwnd, ID_LOCK, c.lock_zone_maximized);
     set_check(hwnd, ID_PRE_MOUSE, c.preempt_mouse_maximize);
     set_check(hwnd, ID_PRE_WINUP, c.preempt_win_up);
     set_check(hwnd, ID_WINUP_BYPASS, c.win_up_bypass);
@@ -670,6 +676,7 @@ fn read(hwnd: HWND) -> Result<(Config, bool), String> {
         bypass_modifier: MODIFIERS[combo_index(hwnd, ID_MODIFIER).min(MODIFIERS.len() - 1)].1,
         already_in_zone: ALREADY[combo_index(hwnd, ID_ALREADY).min(ALREADY.len() - 1)].1,
         snap_on_drag_maximize: checked(hwnd, ID_DRAG),
+        lock_zone_maximized: checked(hwnd, ID_LOCK),
         preempt_mouse_maximize: checked(hwnd, ID_PRE_MOUSE),
         preempt_win_up: checked(hwnd, ID_PRE_WINUP),
         win_up_bypass: checked(hwnd, ID_WINUP_BYPASS),

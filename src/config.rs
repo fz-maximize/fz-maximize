@@ -74,6 +74,9 @@ pub struct Config {
     pub already_in_zone: AlreadyInZone,
     /// Drag-to-top-edge (Aero Snap) maximize goes to the zone nearest the cursor.
     pub snap_on_drag_maximize: bool,
+    /// Lock zone-maximized windows like truly maximized ones: their edges don't resize,
+    /// and dragging the title bar restores the pre-snap size (drag to restore).
+    pub lock_zone_maximized: bool,
     /// Intercept maximize-button clicks and title-bar double-clicks before Windows
     /// maximizes (no maximize animation flash). Uses a low-level mouse hook.
     pub preempt_mouse_maximize: bool,
@@ -124,6 +127,7 @@ impl Default for Config {
             bypass_modifier: BypassModifier::Shift,
             already_in_zone: AlreadyInZone::Restore,
             snap_on_drag_maximize: true,
+            lock_zone_maximized: true,
             preempt_mouse_maximize: true,
             preempt_win_up: true,
             animate_maximize: true,
@@ -161,6 +165,11 @@ already_in_zone = "restore"
 
 # Dragging a window to the top screen edge snaps it to the zone under the cursor.
 snap_on_drag_maximize = true
+
+# Lock zone-maximized windows like truly maximized ones: their edges don't resize, and
+# dragging the title bar returns the window to its size from before the snap (drag to
+# restore). Hold the bypass key to resize or move a locked window normally.
+lock_zone_maximized = true
 
 # Catch the maximize button / title-bar double-click / Win+Up *before* Windows
 # maximizes, so the window goes straight into its zone without the maximize animation
@@ -493,6 +502,7 @@ mod tests {
             bypass_modifier: BypassModifier::Alt,
             already_in_zone: AlreadyInZone::Maximize,
             snap_on_drag_maximize: false,
+            lock_zone_maximized: false,
             preempt_mouse_maximize: false,
             preempt_win_up: false,
             animate_maximize: false,

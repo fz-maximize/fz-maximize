@@ -190,7 +190,6 @@ impl Engine {
         }
     }
 
-    #[cfg(test)]
     pub fn snap_record(&self, hwnd: Hwnd) -> Option<SnapRecord> {
         self.windows.get(&hwnd).and_then(|s| s.snap)
     }
@@ -360,11 +359,42 @@ impl Engine {
     }
 }
 
+/// Drag to restore: where a window of `size` goes when the user starts dragging the title
+/// bar of a zone-maximized window currently at `current`, with the cursor at `cursor`.
+/// Like Windows' own drag-to-restore, the cursor keeps its relative horizontal position
+/// in the title bar and its distance from the top edge.
+pub fn drag_restore_rect(current: &Rect, size: (i32, i32), cursor: Point) -> Rect {
+    let (w, h) = (size.0.max(1), size.1.max(1));
+    let fx = (f64::from(cursor.x - current.left) / f64::from(current.width().max(1))).clamp(0.0, 1.0);
+    let dy = (cursor.y - current.top).clamp(0, h - 1);
+    let left = cursor.x - ((fx * f64::from(w)).round() as i32).clamp(0, w - 1);
+    let top = cursor.y - dy;
+    Rect::new(left, top, left + w, top + h)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const H: Hwnd = 0x1234;
+
+    #[test]
+    fn drag_restore_keeps_the_cursor_on_the_title_bar() {
+        // Zone 1920 wide; grabbed at 25% across, 15 px below the top.
+        let zone = Rect::new(960, 0, 2880, 2300);
+        let cursor = Point::new(960 + 480, 15);
+        let r = drag_restore_rect(&zone, (800, 600), cursor);
+        assert_eq!((r.width(), r.height()), (800, 600), "pre-snap size");
+        assert_eq!(r.left, cursor.x - 200, "same relative position: 25% of 800");
+        assert_eq!(r.top, 0, "same distance from the top");
+        assert!(r.contains(cursor), "cursor stays on the window");
+        // Grabbed at the far right: the restored window ends just past the cursor.
+        let r = drag_restore_rect(&zone, (800, 600), Point::new(2879, 15));
+        assert!(r.contains(Point::new(2879, 15)) && r.right == 2880);
+        // Cursor lower than the restored height (tall title bar): clamped onto the window.
+        let r = drag_restore_rect(&zone, (800, 40), Point::new(1500, 100));
+        assert!(r.contains(Point::new(1500, 100)));
+    }
     const ZONES: [Rect; 3] = [
         Rect::new(16, 16, 1912, 2096),
         Rect::new(1928, 16, 5752, 2096),

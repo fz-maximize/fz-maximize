@@ -88,6 +88,13 @@ don't report themselves to Windows, programmatic maximizes) are still corrected 
 after Windows maximizes, so the maximize animation briefly shows for those.
 Interception can be turned off with `preempt_mouse_maximize` / `preempt_win_up`.
 
+**Zone-maximized windows behave like maximized ones** (`lock_zone_maximized`, on by
+default): their edges don't resize, and dragging the title bar returns the window to its
+size from before the snap, under the cursor, and moves it (drag to restore, as Windows does
+for maximized windows). Hold the bypass key (Shift) to resize or move it normally. The
+resize cursor still shows at the edges (it belongs to the app), and Alt+Space Move/Size
+isn't blocked.
+
 Those intercepted moves are **animated** into the zone (`animate_maximize`,
 `animation_ms`), so they feel like Windows' own maximize. The animation is drawn the way Windows'
 compositor draws its own (GPU-scaled live previews, at the display's refresh rate), in
@@ -109,6 +116,7 @@ it, with every option documented. Apply hand edits with tray → Reload.
 bypass_modifier = "shift"          # shift | ctrl | alt | none
 already_in_zone = "restore"        # restore | maximize
 snap_on_drag_maximize = true
+lock_zone_maximized = true         # zone-maximized windows don't resize; dragging the title bar restores them
 preempt_mouse_maximize = true      # catch max button / title-bar double-click before Windows (no flash)
 preempt_win_up = true              # same for Win+Up
 win_up_bypass = true               # Win + bypass key + Up = full maximize (replaces Win+Shift+Up stretch)

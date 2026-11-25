@@ -134,9 +134,23 @@ impl Drop for Guard {
     }
 }
 
+/// A config file with all defaults, so the user's own settings (excluded monitors, a
+/// minimum aspect ratio, ...) never change what the tests see.
+fn default_config() -> std::path::PathBuf {
+    let path = std::env::temp_dir().join("fz-maximize-e2e-defaults.toml");
+    std::fs::write(
+        &path,
+        "# all defaults
+",
+    )
+    .unwrap();
+    path
+}
+
 fn zones_of_primary() -> Option<Vec<R>> {
     let out = Command::new(EXE)
-        .args(["--dump", "--json"])
+        .args(["--dump", "--json", "--config"])
+        .arg(default_config())
         .output()
         .expect("run --dump");
     assert!(
@@ -203,6 +217,8 @@ fn setup_with(log_name: &str, config: Option<&str>) -> Option<(Guard, HWND, Vec<
         cmd.arg("--config").arg(&path);
     } else if let Ok(cfg) = std::env::var("FZM_E2E_CONFIG") {
         cmd.args(["--config", &cfg]);
+    } else {
+        cmd.arg("--config").arg(default_config());
     }
     let fzm = cmd
         .env("FZM_LOG", "debug")
@@ -1817,4 +1833,127 @@ fn bench_screen_capture() {
             );
         }
     }
+}
+
+/// Drag with the left button from `from` to `to` in small steps, like a hand would.
+fn drag(from: POINT, to: POINT, steps: i32) {
+    send_mouse(from.x, from.y, MOUSE_EVENT_FLAGS(0));
+    std::thread::sleep(Duration::from_millis(80));
+    send_mouse(from.x, from.y, MOUSEEVENTF_LEFTDOWN);
+    std::thread::sleep(Duration::from_millis(80));
+    for i in 1..=steps {
+        let x = from.x + (to.x - from.x) * i / steps;
+        let y = from.y + (to.y - from.y) * i / steps;
+        send_mouse(x, y, MOUSE_EVENT_FLAGS(0));
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    std::thread::sleep(Duration::from_millis(150));
+}
+
+fn size_of(r: &R) -> (i32, i32) {
+    (r.r - r.l, r.b - r.t)
+}
+
+#[test]
+#[ignore = "drives the live desktop with real clicks; run with `task e2e`"]
+fn locked_zone_maximized_window_resists_resize_and_drag_restores() {
+    let Some((_guard, h, zones, _log)) = setup_with("fz-maximize-e2e-lock.log", Some("animate_maximize = false\n"))
+    else {
+        return;
+    };
+    let zone = zones[1];
+    let mut original = POINT::default();
+    unsafe { GetCursorPos(&mut original).unwrap() };
+    let _mouse = MouseGuard(original);
+
+    // Zone-maximize it.
+    let before = place_inside(h, &zone);
+    force_foreground(h);
+    std::thread::sleep(Duration::from_millis(500));
+    let (max_btn, _) = title_bar_buttons(h);
+    click(h, max_btn.x, max_btn.y);
+    assert!(
+        wait_until(Duration::from_secs(2), || frame(h).near(&zone, 1)),
+        "not snapped"
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let snapped = window_rect(h);
+
+    // 1. Resizing from an edge does nothing.
+    let f = frame(h);
+    let edge = POINT {
+        x: f.r + 2,
+        y: (f.t + f.b) / 2,
+    };
+    assert_target_under(h, edge.x, edge.y);
+    drag(
+        edge,
+        POINT {
+            x: edge.x - 300,
+            y: edge.y,
+        },
+        12,
+    );
+    send_mouse(edge.x - 300, edge.y, MOUSEEVENTF_LEFTUP);
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        window_rect(h).near(&snapped, 1),
+        "locked window was resized: {:?}",
+        window_rect(h)
+    );
+
+    // 2. A plain click on the title bar leaves it where it is (and the click still works).
+    let (_, caption) = title_bar_buttons(h);
+    click(h, caption.x, caption.y);
+    std::thread::sleep(Duration::from_millis(700)); // past the double-click time
+    assert!(window_rect(h).near(&snapped, 1), "click moved the locked window");
+    assert!(foreground_is(h), "click on the title bar should keep it active");
+
+    // 3. Dragging the title bar restores the pre-snap size under the cursor and moves it.
+    let grab = POINT {
+        x: caption.x,
+        y: caption.y,
+    };
+    let to = POINT {
+        x: grab.x + 250,
+        y: grab.y + 300,
+    };
+    drag(grab, to, 20);
+    let mid = window_rect(h);
+    eprintln!("during drag: {mid:?} (pre-snap size {:?})", size_of(&before));
+    assert_eq!(
+        size_of(&mid),
+        size_of(&before),
+        "should be back to its pre-snap size while dragging"
+    );
+    assert!(
+        mid.l <= to.x && to.x < mid.r && mid.t <= to.y && to.y < mid.b,
+        "window should be under the cursor"
+    );
+    send_mouse(to.x, to.y, MOUSEEVENTF_LEFTUP);
+    std::thread::sleep(Duration::from_millis(500));
+    let after = window_rect(h);
+    assert_eq!(size_of(&after), size_of(&before));
+    assert!(!after.near(&snapped, 5), "should have moved out of the zone");
+
+    // 4. No longer zone-maximized, so no longer locked: the edge resizes again.
+    let f = frame(h);
+    let edge = POINT {
+        x: f.r + 2,
+        y: (f.t + f.b) / 2,
+    };
+    drag(
+        edge,
+        POINT {
+            x: edge.x - 150,
+            y: edge.y,
+        },
+        10,
+    );
+    send_mouse(edge.x - 150, edge.y, MOUSEEVENTF_LEFTUP);
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        size_of(&window_rect(h)).0 < size_of(&after).0 - 50,
+        "unlocked window should resize"
+    );
 }

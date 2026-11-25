@@ -22,7 +22,7 @@
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering};
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 use std::thread::JoinHandle;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -30,21 +30,21 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::HiDpi::PhysicalToLogicalPointForPerMonitorDPI;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, GetDoubleClickTime, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
-    VK_UP,
+    GetAsyncKeyState, GetDoubleClickTime, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MOUSE_EVENT_FLAGS, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT,
+    SendInput, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GA_ROOT, GetAncestor, GetForegroundWindow, GetMessageW, GetSystemMetrics,
     HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, PostMessageW, PostThreadMessageW, SM_CXDOUBLECLK,
-    SM_CYDOUBLECLK, SMTO_ABORTIFHUNG, SMTO_BLOCK, SendMessageTimeoutW, SetWindowsHookExW, UnhookWindowsHookEx,
-    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_NCHITTEST, WM_QUIT,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WindowFromPoint,
+    SM_CXDRAG, SM_CYDOUBLECLK, SM_CYDRAG, SMTO_ABORTIFHUNG, SMTO_BLOCK, SendMessageTimeoutW, SetWindowsHookExW,
+    UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEMOVE, WM_NCHITTEST, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WindowFromPoint,
 };
 
 use crate::config::BypassModifier;
 use crate::engine::Hwnd;
-use crate::geometry::Point;
+use crate::geometry::{Point, Rect};
 use crate::win::{hwnd_from, hwnd_key};
 use crate::window;
 
@@ -70,6 +70,9 @@ pub enum Kind {
     /// swallowed (Windows maximizes natively), but the main thread is told right away so
     /// the result isn't redirected even if the modifier is released before Windows acts.
     Bypassed = 5,
+    /// The title bar of a locked (zone-maximized) window is being dragged: restore its
+    /// pre-snap size under the cursor and let the move continue (drag to restore).
+    DragRestore = 6,
 }
 
 impl Kind {
@@ -80,6 +83,7 @@ impl Kind {
             3 => Kind::WinUp,
             4 => Kind::WinUpFull,
             5 => Kind::Bypassed,
+            6 => Kind::DragRestore,
             _ => return None,
         })
     }
@@ -91,6 +95,7 @@ impl Kind {
             Kind::WinUp => "Win+Up",
             Kind::WinUpFull => "Win+bypass+Up",
             Kind::Bypassed => "bypass-modifier click",
+            Kind::DragRestore => "title-bar drag (restore)",
         }
     }
 }
@@ -118,6 +123,15 @@ pub struct Press {
     pub eligible: bool,
     /// The bypass modifier is held: recognize the gesture but let Windows do it natively.
     pub bypass: bool,
+    /// The window is zone-maximized and locked: its edges don't resize, and dragging its
+    /// title bar restores its pre-snap size (like a truly maximized window).
+    pub locked: bool,
+}
+
+/// `WM_NCHITTEST` results for the resize borders and the size grip.
+pub fn is_resize_hit(hit: u32) -> bool {
+    // HTSIZE (4), HTLEFT..HTBOTTOMRIGHT (10..=17).
+    hit == 4 || (10..=17).contains(&hit)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,11 +145,16 @@ pub enum Verdict {
     /// Swallow this Win-key release and replay it after a mask key, so the shell sees
     /// "Win + some key" instead of a lone Win press (which opens the Start menu).
     ReplayWinRelease(u16),
+    /// Let the event through and ask the main thread to drag-restore this locked window.
+    DragRestore(Hwnd),
+    /// Swallow this release and replay the whole click (press + release): a press on a
+    /// locked window's title bar was held back to see whether it becomes a drag; it didn't.
+    ReplayClick,
 }
 
 impl Verdict {
     pub fn swallows(self) -> bool {
-        !matches!(self, Verdict::Pass | Verdict::Notice(_))
+        !matches!(self, Verdict::Pass | Verdict::Notice(_) | Verdict::DragRestore(_))
     }
 }
 
@@ -143,6 +162,14 @@ impl Verdict {
 enum Pending {
     MaxButton(Hwnd),
     CaptionDouble(Hwnd),
+    /// A press on a locked window's resize border: swallowed, and so is its release.
+    BlockedResize,
+    /// A press on a locked window's title bar, held back: a drag restores the window, a
+    /// release without moving replays the click.
+    CaptionHold {
+        root: Hwnd,
+        start: Point,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,12 +195,18 @@ impl Recognizer {
     pub fn press(&mut self, p: Press, dbl: DoubleClick) -> Verdict {
         // A new press always resolves any half-finished gesture.
         self.pending = None;
-        if !p.eligible {
+        if !p.eligible && !p.locked {
             self.last_caption = None;
             return Verdict::Pass;
         }
+        // Locked window (the bypass modifier unlocks it for this press).
+        if p.locked && !p.bypass && is_resize_hit(p.hit) {
+            self.last_caption = None;
+            self.pending = Some(Pending::BlockedResize);
+            return Verdict::Swallow;
+        }
         match p.hit {
-            HT_MAXBUTTON => {
+            HT_MAXBUTTON if p.eligible => {
                 self.last_caption = None;
                 if p.bypass {
                     return Verdict::Notice(p.root);
@@ -182,12 +215,13 @@ impl Recognizer {
                 Verdict::Swallow
             }
             HT_CAPTION => {
-                let is_double = self.last_caption.is_some_and(|prev| {
-                    prev.root == p.root
-                        && p.time.wrapping_sub(prev.time) <= dbl.time_ms
-                        && (p.pt.x - prev.pt.x).abs() <= dbl.cx / 2
-                        && (p.pt.y - prev.pt.y).abs() <= dbl.cy / 2
-                });
+                let is_double = p.eligible
+                    && self.last_caption.is_some_and(|prev| {
+                        prev.root == p.root
+                            && p.time.wrapping_sub(prev.time) <= dbl.time_ms
+                            && (p.pt.x - prev.pt.x).abs() <= dbl.cx / 2
+                            && (p.pt.y - prev.pt.y).abs() <= dbl.cy / 2
+                    });
                 if is_double {
                     self.last_caption = None;
                     if p.bypass {
@@ -201,7 +235,16 @@ impl Recognizer {
                         pt: p.pt,
                         time: p.time,
                     });
-                    Verdict::Pass
+                    if p.locked && !p.bypass {
+                        // Hold the press back: is it a click or the start of a drag?
+                        self.pending = Some(Pending::CaptionHold {
+                            root: p.root,
+                            start: p.pt,
+                        });
+                        Verdict::Swallow
+                    } else {
+                        Verdict::Pass
+                    }
                 }
             }
             _ => {
@@ -229,8 +272,29 @@ impl Recognizer {
                 }
             }
             Some(Pending::CaptionDouble(root)) => Verdict::Fire(root, Kind::CaptionDoubleClick),
+            Some(Pending::BlockedResize) => Verdict::Swallow,
+            // Released without dragging: it was a plain click after all.
+            Some(Pending::CaptionHold { .. }) => Verdict::ReplayClick,
             None => Verdict::Pass,
         }
+    }
+
+    /// The mouse moved (with the left button down, if a press is pending). `drag` is the
+    /// system drag rectangle (`SM_CXDRAG` x `SM_CYDRAG`): moving out of it starts a drag.
+    pub fn moved(&mut self, pt: Point, drag: (i32, i32)) -> Verdict {
+        if let Some(Pending::CaptionHold { root, start }) = self.pending
+            && ((pt.x - start.x).abs() > drag.0 / 2 || (pt.y - start.y).abs() > drag.1 / 2)
+        {
+            self.pending = None;
+            self.last_caption = None;
+            return Verdict::DragRestore(root);
+        }
+        Verdict::Pass
+    }
+
+    /// Whether mouse moves matter right now (so the hook can skip them cheaply).
+    pub fn wants_moves(&self) -> bool {
+        matches!(self.pending, Some(Pending::CaptionHold { .. }))
     }
 
     /// A key event. `intercept` returns the foreground window to place when Win+Up may
@@ -311,8 +375,54 @@ static WIN_UP_ON: AtomicBool = AtomicBool::new(false);
 static WIN_UP_BYPASS_ON: AtomicBool = AtomicBool::new(false);
 static PAUSED: AtomicBool = AtomicBool::new(false);
 static BYPASS: AtomicU8 = AtomicU8::new(0);
+static LOCK_ON: AtomicBool = AtomicBool::new(false);
+/// Zone-maximized windows and the window rect we put each in. A window is locked only
+/// while it's still exactly there (moved or resized by anything else = unlocked).
+static LOCKED: Mutex<Vec<(Hwnd, Rect)>> = Mutex::new(Vec::new());
+/// `dwExtraInfo` of mouse input we inject ourselves, so the hook lets it through.
+const INJECTED: usize = 0x465A_4D31; // "FZM1"
+/// Posted to the hook thread itself: replay a held-back title-bar click.
+const WM_APP_CLICK: u32 = WM_APP + 5;
 
-pub fn configure(mouse: bool, win_up: bool, win_up_bypass: bool, bypass: BypassModifier) {
+/// The physical left button, as last seen by the hook. (A swallowed press never reaches
+/// Windows' own key state, so `GetAsyncKeyState` can't tell.)
+static LEFT_HELD: AtomicBool = AtomicBool::new(false);
+
+/// Whether the user is physically holding the left button.
+pub fn left_button_held() -> bool {
+    LEFT_HELD.load(Ordering::Relaxed)
+}
+
+/// Lock (or with `None`, unlock) a window the main thread zone-maximized.
+pub fn set_locked(hwnd: Hwnd, at: Option<Rect>) {
+    let Ok(mut locked) = LOCKED.lock() else { return };
+    locked.retain(|(h, _)| *h != hwnd);
+    if let Some(r) = at {
+        locked.push((hwnd, r));
+    }
+}
+
+/// Whether `root` is a locked window right now (it's still where we put it).
+fn is_locked(root: HWND) -> bool {
+    if !LOCK_ON.load(Ordering::Relaxed) {
+        return false;
+    }
+    let Ok(mut locked) = LOCKED.lock() else { return false };
+    let key = hwnd_key(root);
+    let Some(i) = locked.iter().position(|(h, _)| *h == key) else {
+        return false;
+    };
+    if window::window_rect(root).is_some_and(|now| now.approx_eq(&locked[i].1, 2)) {
+        true
+    } else {
+        // Moved or resized since (FancyZones, the app, the keyboard): no longer locked.
+        locked.swap_remove(i);
+        false
+    }
+}
+
+pub fn configure(mouse: bool, win_up: bool, win_up_bypass: bool, bypass: BypassModifier, lock: bool) {
+    LOCK_ON.store(lock, Ordering::Relaxed);
     MOUSE_ON.store(mouse, Ordering::Relaxed);
     WIN_UP_ON.store(win_up, Ordering::Relaxed);
     WIN_UP_BYPASS_ON.store(win_up_bypass, Ordering::Relaxed);
@@ -408,11 +518,31 @@ fn fire(hwnd: Hwnd, kind: Kind) {
 }
 
 unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code == HC_ACTION as i32 && MOUSE_ON.load(Ordering::Relaxed) {
+    let mouse_on = MOUSE_ON.load(Ordering::Relaxed);
+    if code == HC_ACTION as i32 && (mouse_on || LOCK_ON.load(Ordering::Relaxed)) {
         let msg = wparam.0 as u32;
-        if msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP {
-            // SAFETY: for WH_MOUSE_LL, lParam points to an MSLLHOOKSTRUCT.
-            let info = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
+        // SAFETY: for WH_MOUSE_LL, lParam points to an MSLLHOOKSTRUCT.
+        let info = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
+        if info.dwExtraInfo == INJECTED {
+            // Our own replayed click or drag start.
+            return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+        }
+        if msg == WM_MOUSEMOVE {
+            let verdict = RECOGNIZER.with(|r| {
+                let Ok(mut r) = r.try_borrow_mut() else {
+                    return Verdict::Pass;
+                };
+                if !r.wants_moves() {
+                    return Verdict::Pass;
+                }
+                let drag = unsafe { (GetSystemMetrics(SM_CXDRAG), GetSystemMetrics(SM_CYDRAG)) };
+                r.moved(Point::new(info.pt.x, info.pt.y), drag)
+            });
+            if let Verdict::DragRestore(h) = verdict {
+                fire(h, Kind::DragRestore);
+            }
+        } else if msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP {
+            LEFT_HELD.store(msg == WM_LBUTTONDOWN, Ordering::Relaxed);
             let verdict = RECOGNIZER.with(|r| {
                 let Ok(mut r) = r.try_borrow_mut() else {
                     return Verdict::Pass;
@@ -420,16 +550,19 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                 if msg == WM_LBUTTONDOWN {
                     let press = match root_at(info.pt) {
                         Some(root) => {
-                            let eligible = !PAUSED.load(Ordering::Relaxed)
+                            let candidate = !PAUSED.load(Ordering::Relaxed)
                                 && window::is_trackable(root)
                                 && !window::is_zoomed(root);
+                            let eligible = candidate && mouse_on;
+                            let locked = candidate && is_locked(root);
                             Press {
                                 root: hwnd_key(root),
-                                hit: if eligible { hit_test(root, info.pt) } else { 0 },
+                                hit: if eligible || locked { hit_test(root, info.pt) } else { 0 },
                                 bypass: bypass_held(),
                                 pt: Point::new(info.pt.x, info.pt.y),
                                 time: info.time,
                                 eligible,
+                                locked,
                             }
                         }
                         None => Press {
@@ -439,6 +572,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                             time: info.time,
                             eligible: false,
                             bypass: false,
+                            locked: false,
                         },
                     };
                     let dbl = DoubleClick {
@@ -457,6 +591,10 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
             match verdict {
                 Verdict::Fire(h, kind) => fire(h, kind),
                 Verdict::Notice(h) => fire(h, Kind::Bypassed),
+                // Inject after returning from the hook, not from inside it.
+                Verdict::ReplayClick => unsafe {
+                    let _ = PostThreadMessageW(GetCurrentThreadId(), WM_APP_CLICK, WPARAM(0), LPARAM(0));
+                },
                 _ => {}
             }
             if verdict.swallows() {
@@ -522,6 +660,40 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         }
     }
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+/// Inject left-button input, marked so our own hook lets it through.
+fn inject_left(events: &[MOUSE_EVENT_FLAGS]) {
+    let inputs: Vec<INPUT> = events
+        .iter()
+        .map(|&flags| INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: 0,
+                    dy: 0,
+                    mouseData: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: INJECTED,
+                },
+            },
+        })
+        .collect();
+    unsafe {
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+/// Press the left button (at the cursor) on behalf of the user, who is physically
+/// holding it: after a drag-restore, this starts the window's own move loop.
+pub fn inject_left_down() {
+    inject_left(&[MOUSEEVENTF_LEFTDOWN]);
+}
+
+/// Release the left button (when the user let go while we were injecting the press).
+pub fn inject_left_up() {
+    inject_left(&[MOUSEEVENTF_LEFTUP]);
 }
 
 /// Tap an unassigned key, then (when `win_vk` is non-zero) release the Win key we
@@ -593,6 +765,10 @@ impl InputHooks {
                         inject_mask_and_win_release(msg.wParam.0 as u16);
                         continue;
                     }
+                    if msg.message == WM_APP_CLICK {
+                        inject_left(&[MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP]);
+                        continue;
+                    }
                     unsafe {
                         DispatchMessageW(&msg);
                     }
@@ -652,6 +828,7 @@ mod tests {
             time,
             eligible: true,
             bypass: false,
+            locked: false,
         }
     }
 
@@ -835,9 +1012,103 @@ mod tests {
             Kind::WinUp,
             Kind::WinUpFull,
             Kind::Bypassed,
+            Kind::DragRestore,
         ] {
             assert_eq!(Kind::from_raw(k as isize), Some(k));
         }
         assert_eq!(Kind::from_raw(0), None);
+    }
+
+    // --- Locked (zone-maximized) windows ---
+
+    const DRAG: (i32, i32) = (4, 4);
+    const HT_LEFT: u32 = 10;
+    const HT_BOTTOMRIGHT: u32 = 17;
+
+    fn locked(hit: u32, x: i32, time: u32) -> Press {
+        Press {
+            locked: true,
+            ..press(hit, x, time)
+        }
+    }
+
+    #[test]
+    fn locked_window_edges_do_not_resize() {
+        let mut r = Recognizer::default();
+        for hit in [HT_LEFT, HT_BOTTOMRIGHT, 4] {
+            assert_eq!(
+                r.press(locked(hit, 50, 0), DBL),
+                Verdict::Swallow,
+                "press on border {hit}"
+            );
+            assert_eq!(r.release(|_| false), Verdict::Swallow, "and its release");
+        }
+        // An unlocked window resizes as usual.
+        assert_eq!(r.press(press(HT_LEFT, 50, 0), DBL), Verdict::Pass);
+        assert_eq!(r.release(|_| false), Verdict::Pass);
+        // The bypass key unlocks a locked window for that press.
+        let p = Press {
+            bypass: true,
+            ..locked(HT_LEFT, 50, 0)
+        };
+        assert_eq!(r.press(p, DBL), Verdict::Pass);
+    }
+
+    #[test]
+    fn locked_title_bar_click_is_replayed_and_drag_restores() {
+        let mut r = Recognizer::default();
+        // Press is held back; a tiny wobble isn't a drag; releasing replays the click.
+        assert_eq!(r.press(locked(HT_CAPTION, 50, 0), DBL), Verdict::Swallow);
+        assert!(r.wants_moves());
+        assert_eq!(r.moved(Point::new(51, 11), DRAG), Verdict::Pass);
+        assert_eq!(r.release(|_| false), Verdict::ReplayClick);
+        assert!(!r.wants_moves());
+        // Press, then move out of the drag rectangle: drag to restore (moves pass through),
+        // and the release then ends the window's own move loop normally.
+        assert_eq!(r.press(locked(HT_CAPTION, 300, 5000), DBL), Verdict::Swallow);
+        assert_eq!(r.moved(Point::new(310, 10), DRAG), Verdict::DragRestore(W));
+        assert!(!Verdict::DragRestore(W).swallows());
+        assert!(!r.wants_moves());
+        assert_eq!(r.release(|_| false), Verdict::Pass);
+    }
+
+    #[test]
+    fn locked_window_double_click_still_toggles() {
+        let mut r = Recognizer::default();
+        assert_eq!(r.press(locked(HT_CAPTION, 50, 0), DBL), Verdict::Swallow);
+        assert_eq!(r.release(|_| false), Verdict::ReplayClick);
+        assert_eq!(r.press(locked(HT_CAPTION, 51, 200), DBL), Verdict::Swallow);
+        assert_eq!(r.release(|_| false), Verdict::Fire(W, Kind::CaptionDoubleClick));
+    }
+
+    #[test]
+    fn lock_works_with_mouse_interception_off() {
+        // Locked but not eligible for interception (preempt_mouse_maximize = false): the
+        // lock still applies; the maximize button and double-clicks are left to Windows.
+        let mut r = Recognizer::default();
+        let p = |hit, x, time| Press {
+            eligible: false,
+            ..locked(hit, x, time)
+        };
+        assert_eq!(r.press(p(HT_MAXBUTTON, 50, 0), DBL), Verdict::Pass);
+        assert_eq!(r.press(p(HT_LEFT, 50, 0), DBL), Verdict::Swallow);
+        assert_eq!(r.release(|_| false), Verdict::Swallow);
+        assert_eq!(r.press(p(HT_CAPTION, 50, 1000), DBL), Verdict::Swallow);
+        assert_eq!(r.release(|_| false), Verdict::ReplayClick);
+        assert_eq!(
+            r.press(p(HT_CAPTION, 50, 1100), DBL),
+            Verdict::Swallow,
+            "no double-click: held again"
+        );
+    }
+
+    #[test]
+    fn resize_hit_codes() {
+        for hit in [4, 10, 11, 12, 13, 14, 15, 16, 17] {
+            assert!(is_resize_hit(hit));
+        }
+        for hit in [0, 1, 2, 3, 8, 9, 18, 20] {
+            assert!(!is_resize_hit(hit));
+        }
     }
 }

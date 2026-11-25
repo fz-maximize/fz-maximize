@@ -121,7 +121,9 @@ jobs:
           $pe = [BitConverter]::ToInt32($bytes, 0x3C)
           $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
           if ($machine -ne 0xAA64) { throw ("not an ARM64 binary: machine 0x{0:X4}" -f $machine) }
-          $out = & $exe --version
+          # Pipe it: PowerShell only captures a windowed (GUI-subsystem) exe's output when
+          # piped; plain assignment gives an empty string.
+          $out = (& $exe --version | Out-String).Trim()
           Write-Host $out
           if ($out -ne "fz-maximize $env:VERSION") { throw "unexpected --version output: $out" }
           # The ARM64 installer is an ARM64-only Inno Setup build; check it is present.

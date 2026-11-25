@@ -215,7 +215,10 @@ tasks:
     vars:
       ZIP: dist/{{.BIN}}-{{.VERSION}}-x64-portable.zip
     cmds:
-      - '{{.PS}} "New-Item -ItemType Directory -Force -Path dist | Out-Null; Compress-Archive -Force -Path ''{{.RELEASE_EXE}}'',README.md,LICENSE,THIRD_PARTY_NOTICES.md,docs -DestinationPath ''{{.ZIP}}''"'
+      # Windows' own bsdtar (System32) writes zip files; Git's GNU tar can't. Avoids
+      # Compress-Archive, which breaks when Windows PowerShell inherits PS7's module path.
+      - cmd /c "if not exist dist mkdir dist"
+      - '"{{.SYSTEMROOT}}\System32\tar.exe" -a -cf "{{.ZIP}}" -C target/release {{.BIN}}.exe -C ../.. README.md LICENSE THIRD_PARTY_NOTICES.md docs'
       - cmd: echo "Created {{.ZIP}}"
         silent: true
 

@@ -61,7 +61,13 @@ $args += (Join-Path $root "installer\fz-maximize.iss")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $out = Join-Path $root "dist\fz-maximize-$Version-$Arch-setup.exe"
-$hash = (Get-FileHash -Algorithm SHA256 $out).Hash
+# .NET directly rather than Get-FileHash: when Windows PowerShell 5.1 is started from
+# PowerShell 7 (as on GitHub runners), it inherits PS7's module path and the built-in
+# Get-FileHash cmdlet fails to load.
+$sha = [System.Security.Cryptography.SHA256]::Create()
+$stream = [System.IO.File]::OpenRead($out)
+try { $hash = -join ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString("X2") }) }
+finally { $stream.Dispose(); $sha.Dispose() }
 "$hash  $(Split-Path -Leaf $out)" | Set-Content -Encoding ascii "$out.sha256"
 Write-Host "Built $out"
 Write-Host "SHA256 $hash"

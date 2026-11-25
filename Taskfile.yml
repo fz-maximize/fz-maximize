@@ -49,6 +49,12 @@ tasks:
     cmds:
       - cargo clippy --all-targets -- -D warnings
 
+  lint:arm64:
+    desc: Clippy for the ARM64 target (type-checks only; no ARM64 build tools needed)
+    deps: [setup:arm64]
+    cmds:
+      - cargo clippy --all-targets --target {{.ARM64_TARGET}} -- -D warnings
+
   test:
     desc: Run unit + fixture tests (no desktop interaction)
     cmds:
@@ -206,10 +212,22 @@ tasks:
       - winget install -e --id JRSoftware.InnoSetup --scope user --accept-package-agreements --accept-source-agreements
 
   package:
-    desc: Build everything a release ships — installer and portable zip — into dist/
+    desc: Build the x64 installer and portable zip into dist/
     cmds:
       - task: package:installer
       - task: package:zip
+
+  package:arm64:
+    desc: Build the ARM64 installer and portable zip into dist/ (needs the VS "ARM64 build tools")
+    cmds:
+      - task: package:installer:arm64
+      - task: package:zip:arm64
+
+  package:all:
+    desc: Build everything a release ships (x64 and ARM64) into dist/ — what the Release workflow runs
+    cmds:
+      - task: package
+      - task: package:arm64
 
   package:installer:
     desc: Build dist/fz-maximize-<version>-x64-setup.exe (+ .sha256); signed if FZM_SIGN_COMMAND is set
@@ -245,6 +263,17 @@ tasks:
       # template lookup is case-sensitive and the name's case depends on the parent shell
       # (Git Bash: SYSTEMROOT, PowerShell/cmd: SystemRoot); the shell variable works for both.
       - '"$SYSTEMROOT\System32\tar.exe" -a -cf "{{.ZIP}}" -C target/release {{.BIN}}.exe -C ../.. README.md LICENSE THIRD_PARTY_NOTICES.md docs'
+      - cmd: echo "Created {{.ZIP}}"
+        silent: true
+
+  package:zip:arm64:
+    desc: Zip the portable ARM64 exe + docs into dist/
+    deps: [build:arm64]
+    vars:
+      ZIP: dist/{{.BIN}}-{{.VERSION}}-arm64-portable.zip
+    cmds:
+      - cmd /c "if not exist dist mkdir dist"
+      - '"$SYSTEMROOT\System32\tar.exe" -a -cf "{{.ZIP}}" -C target/{{.ARM64_TARGET}}/release {{.BIN}}.exe -C ../../.. README.md LICENSE THIRD_PARTY_NOTICES.md docs'
       - cmd: echo "Created {{.ZIP}}"
         silent: true
 

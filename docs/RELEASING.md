@@ -2,16 +2,19 @@
 
 ## What a release contains
 
-`task package` builds everything into `dist\`:
+`task package:all` builds everything into `dist\`:
 
 | File | What it is |
 |---|---|
 | `fz-maximize-<ver>-x64-setup.exe` | Inno Setup installer (per-user, no admin). The main artifact for GitHub Releases, winget and the Microsoft Store. |
 | `fz-maximize-<ver>-x64-setup.exe.sha256` | Its SHA-256 (winget manifests need it). |
 | `fz-maximize-<ver>-x64-portable.zip` | The bare exe + docs, for people who don't want an installer. |
+| `fz-maximize-<ver>-arm64-setup.exe` (+ `.sha256`), `-arm64-portable.zip` | The same for Windows on ARM: a native ARM64 build, not x64 under emulation. |
 
-`task package:installer:arm64` builds the ARM64 installer (needs `task setup:arm64` and
-the Visual Studio ARM64 build tools).
+`task package` builds just the x64 files, and `task package:arm64` just the ARM64 ones.
+ARM64 needs the Visual Studio "MSVC ARM64 build tools" component; the Release workflow's
+runner has it. Without it you can still type-check the ARM64 build with `task lint:arm64`
+(CI does that on every PR).
 
 The version comes from `version` in `Cargo.toml`.
 
@@ -103,7 +106,8 @@ task package
    can't be moved or deleted. A published version is final, so a fix means a new version.
    The **Release** workflow (`.github/workflows/release.yml`) then:
    * checks that the tag matches `Cargo.toml`;
-   * runs `task check` and `task package` on a clean Windows runner;
+   * runs `task check` and `task package:all` (x64 + ARM64) on a clean Windows runner;
+   * runs the ARM64 exe on a real Windows on ARM runner (native ARM64 binary, right version);
    * (once SignPath is set up) signs the exe and installer;
    * writes `SHA256SUMS.txt` and a build-provenance attestation;
    * publishes the GitHub Release (as `github-actions`) with the installer, portable

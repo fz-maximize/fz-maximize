@@ -7,6 +7,9 @@
 #   workflow artifact only, without publishing anything. Useful to test the pipeline.
 #
 # Code signing (SignPath Foundation) slots in at the marked step once approved.
+#
+# ARM64 is cross-compiled on the x64 runner (its Visual Studio has the ARM64 build tools),
+# then smoke-tested on a real Windows on ARM runner before anything is published.
 name: Release
 
 on:
@@ -64,8 +67,8 @@ jobs:
       - name: fmt + clippy + unit tests
         run: task check
 
-      - name: Build installer and portable zip
-        run: task package
+      - name: Build installers and portable zips (x64 + ARM64)
+        run: task package:all
 
       # --- Code signing goes here (SignPath Foundation, once the project is approved). ---
 
@@ -96,8 +99,36 @@ jobs:
             dist/SHA256SUMS.txt
           if-no-files-found: error
 
-  publish:
+  arm64-smoke:
     needs: build
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fz-maximize-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Run the ARM64 build natively
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          $zip = "dist/fz-maximize-$env:VERSION-arm64-portable.zip"
+          tar -xf $zip -C $env:RUNNER_TEMP
+          $exe = Join-Path $env:RUNNER_TEMP "fz-maximize.exe"
+          # PE machine type must be ARM64 (0xAA64), not x64 running under emulation.
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+          if ($machine -ne 0xAA64) { throw ("not an ARM64 binary: machine 0x{0:X4}" -f $machine) }
+          $out = & $exe --version
+          Write-Host $out
+          if ($out -ne "fz-maximize $env:VERSION") { throw "unexpected --version output: $out" }
+          # The ARM64 installer is an ARM64-only Inno Setup build; check it is present.
+          if (-not (Test-Path "dist/fz-maximize-$env:VERSION-arm64-setup.exe")) { throw "ARM64 installer missing" }
+
+  publish:
+    needs: [build, arm64-smoke]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
@@ -117,10 +148,15 @@ jobs:
           {
             echo "## Install"
             echo
-            echo "Download **fz-maximize-${VERSION}-x64-setup.exe** and run it. It installs for the current user (no admin rights needed) and can start with Windows."
+            echo "Download the installer for your PC and run it:"
+            echo
+            echo "* **fz-maximize-${VERSION}-x64-setup.exe**: most PCs (Intel and AMD)."
+            echo "* **fz-maximize-${VERSION}-arm64-setup.exe**: Windows on ARM (Snapdragon, e.g. Copilot+ PCs)."
+            echo
+            echo "Not sure? Settings > System > About > System type. Either installs for the current user (no admin rights needed) and can start with Windows."
             echo "Requires Windows 10/11 with PowerToys FancyZones enabled."
             echo
-            echo "A portable build (just the exe) is in **fz-maximize-${VERSION}-x64-portable.zip**."
+            echo "Portable builds (just the exe): **fz-maximize-${VERSION}-x64-portable.zip** and **fz-maximize-${VERSION}-arm64-portable.zip**."
             echo
             echo "## SHA-256"
             echo

@@ -35,3 +35,6 @@ jobs:
 
       - name: fmt + clippy + unit tests
         run: task check
+
+      - name: clippy for ARM64 (type-check; the ARM64 binary is built by the Release workflow)
+        run: task lint:arm64

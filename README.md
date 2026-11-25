@@ -123,7 +123,6 @@ win_up_bypass = true               # Win + bypass key + Up = full maximize (repl
 animate_maximize = true            # animate intercepted maximizes into the zone
 animation_style = "auto"           # "zoom" (Windows 10 look), "morph" (Windows 11 look); auto = this Windows
 animation_ms = 200                 # animation length (50-1000)
-hotkey = "Ctrl+Alt+Up"             # "" disables
 min_aspect_ratio = 0.0             # e.g. 2.0 = only ultrawide monitors
 excluded_monitors = []             # e.g. ["BOE0A52"] (ids from `task dump`)
 excluded_apps = []                 # exe names or window-title substrings
@@ -155,7 +154,7 @@ panels included. To keep normal maximize on a screen, do one of these:
 | `task try` | run the release build from `target/` in the background with debug logging (no install) |
 | `task dump` (`task dump -- --json`) | monitors, matched layouts, zones, and whether maximize is redirected |
 | `task test` | unit + fixture tests (no desktop interaction) |
-| `task e2e` | live test: opens Notepad; real clicks on the maximize button and title bar (never maximized = no flash), toggle, Shift, hotkey, Win+Up (no Start menu) and a real FancyZones Shift-drag |
+| `task e2e` | live test: opens Notepad; real clicks on the maximize button and title bar (never maximized = no flash), toggle, Shift, Win+Up and Win+Shift+Up (no Start menu), the window lock and a real FancyZones Shift-drag |
 | `task check` / `task ci` | fmt + clippy + tests (+ release build) |
 | `task upstream:check` / `upstream:accept` | diff mirrored PowerToys sources against upstream / re-pin the baseline |
 | `task install` / `task uninstall` | install silently via the real installer / uninstall |
@@ -203,7 +202,7 @@ src/
   policy.rs          per-monitor decision: zones or native (pure)
   geometry.rs        rect math, zone selection (pure)
   filters.rs         app / monitor exclusion rules (pure)
-  config.rs          config.toml + hotkey parsing (pure)
+  config.rs          config.toml (pure)
   fancyzones/        FancyZones data: parsing, layout geometry port, monitor matching
   monitors.rs        monitor enumeration + EDID serials
   vdesktop.rs        virtual desktop ids

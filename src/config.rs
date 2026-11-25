@@ -95,9 +95,10 @@ pub struct Config {
     /// maximize, like Shift + maximize button. Replaces Windows' own Win+Shift+Up
     /// ("stretch vertically"); set false to keep that.
     pub win_up_bypass: bool,
-    /// Global hotkey that toggles a native full-monitor maximize of the foreground
-    /// window, e.g. `"Ctrl+Alt+Up"`. Empty disables it.
-    pub hotkey: String,
+    /// Removed in 0.3 (the standalone full-screen hotkey; Win + bypass key + Up does that).
+    /// Still accepted so older config files load; never written back.
+    #[serde(rename = "hotkey", skip_serializing)]
+    pub legacy_hotkey: Option<toml::Value>,
     /// Only intercept on monitors whose width/height ratio is at least this (e.g. 2.0
     /// for ultrawides). 0 disables the filter.
     pub min_aspect_ratio: f64,
@@ -135,7 +136,7 @@ impl Default for Config {
             animation_match_windows: true,
             animation_ms: 200,
             win_up_bypass: true,
-            hotkey: "Ctrl+Alt+Up".into(),
+            legacy_hotkey: None,
             min_aspect_ratio: 0.0,
             excluded_monitors: Vec::new(),
             excluded_apps: Vec::new(),
@@ -184,11 +185,6 @@ bypass_modifier = "shift"
 # ("stretch window vertically"); set false to keep Windows' behavior. Needs
 # preempt_win_up.
 win_up_bypass = true
-
-# Toggle a full-monitor maximize of the active window. "" disables the hotkey.
-# Modifiers: Ctrl, Alt, Shift, Win. Keys: A-Z, 0-9, F1-F24, Up, Down, Left, Right,
-# Home, End, PageUp, PageDown, Insert, Delete, Space, Enter, Tab, Esc, Num0-Num9.
-hotkey = "Ctrl+Alt+Up"
 
 # ---- Appearance ------------------------------------------------------------------
 
@@ -313,9 +309,6 @@ pub fn ensure_exists(path: &Path) -> std::io::Result<()> {
 
 impl Config {
     pub fn validate(&self) -> Result<(), String> {
-        if !self.hotkey.trim().is_empty() {
-            parse_hotkey(&self.hotkey)?;
-        }
         if !(50..=1000).contains(&self.animation_ms) {
             return Err("animation_ms must be between 50 and 1000".into());
         }
@@ -330,145 +323,6 @@ impl Config {
         }
         Ok(())
     }
-
-    pub fn hotkey(&self) -> Option<Hotkey> {
-        if self.hotkey.trim().is_empty() {
-            None
-        } else {
-            parse_hotkey(&self.hotkey).ok()
-        }
-    }
-}
-
-// RegisterHotKey modifier flags.
-pub const MOD_ALT: u32 = 0x0001;
-pub const MOD_CONTROL: u32 = 0x0002;
-pub const MOD_SHIFT: u32 = 0x0004;
-pub const MOD_WIN: u32 = 0x0008;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Hotkey {
-    /// `MOD_*` flags (without `MOD_NOREPEAT`, which the caller adds).
-    pub modifiers: u32,
-    /// Virtual-key code.
-    pub vk: u32,
-}
-
-/// Parse `"Ctrl+Alt+Up"`-style hotkeys. At least one modifier is required so a plain key
-/// can't be hijacked system-wide.
-pub fn parse_hotkey(s: &str) -> Result<Hotkey, String> {
-    let mut modifiers = 0;
-    let mut vk = None;
-    for raw in s.split('+') {
-        let part = raw.trim();
-        if part.is_empty() {
-            return Err(format!("invalid hotkey '{s}'"));
-        }
-        let lower = part.to_ascii_lowercase();
-        let m = match lower.as_str() {
-            "ctrl" | "control" => Some(MOD_CONTROL),
-            "alt" => Some(MOD_ALT),
-            "shift" => Some(MOD_SHIFT),
-            "win" | "windows" | "super" => Some(MOD_WIN),
-            _ => None,
-        };
-        if let Some(m) = m {
-            modifiers |= m;
-            continue;
-        }
-        if vk.is_some() {
-            return Err(format!("hotkey '{s}' has more than one key"));
-        }
-        vk = Some(key_code(&lower).ok_or_else(|| format!("unknown key '{part}' in hotkey '{s}'"))?);
-    }
-    let vk = vk.ok_or_else(|| format!("hotkey '{s}' has no key"))?;
-    if modifiers == 0 {
-        return Err(format!(
-            "hotkey '{s}' needs at least one modifier (Ctrl, Alt, Shift, Win)"
-        ));
-    }
-    Ok(Hotkey { modifiers, vk })
-}
-
-/// `Hotkey` back to its `"Ctrl+Alt+Up"` form (modifier order as Windows writes it:
-/// Win, Ctrl, Alt, Shift).
-pub fn format_hotkey(h: &Hotkey) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-    for (flag, name) in [
-        (MOD_WIN, "Win"),
-        (MOD_CONTROL, "Ctrl"),
-        (MOD_ALT, "Alt"),
-        (MOD_SHIFT, "Shift"),
-    ] {
-        if h.modifiers & flag != 0 {
-            parts.push(name.into());
-        }
-    }
-    parts.push(key_name(h.vk)?);
-    Some(parts.join("+"))
-}
-
-/// Display name of a virtual-key code (inverse of the hotkey key names).
-pub fn key_name(vk: u32) -> Option<String> {
-    Some(match vk {
-        0x30..=0x39 | 0x41..=0x5A => char::from_u32(vk)?.to_string(),
-        0x70..=0x87 => format!("F{}", vk - 0x70 + 1),
-        0x60..=0x69 => format!("Num{}", vk - 0x60),
-        0x26 => "Up".into(),
-        0x28 => "Down".into(),
-        0x25 => "Left".into(),
-        0x27 => "Right".into(),
-        0x24 => "Home".into(),
-        0x23 => "End".into(),
-        0x21 => "PageUp".into(),
-        0x22 => "PageDown".into(),
-        0x2D => "Insert".into(),
-        0x2E => "Delete".into(),
-        0x20 => "Space".into(),
-        0x0D => "Enter".into(),
-        0x09 => "Tab".into(),
-        0x1B => "Esc".into(),
-        0x08 => "Backspace".into(),
-        _ => return None,
-    })
-}
-
-fn key_code(k: &str) -> Option<u32> {
-    let b = k.as_bytes();
-    if b.len() == 1 && (b[0].is_ascii_alphanumeric()) {
-        return Some(u32::from(b[0].to_ascii_uppercase()));
-    }
-    if let Some(n) = k.strip_prefix('f').and_then(|n| n.parse::<u32>().ok())
-        && (1..=24).contains(&n)
-    {
-        return Some(0x70 + n - 1);
-    }
-    if let Some(n) = k
-        .strip_prefix("numpad")
-        .or_else(|| k.strip_prefix("num"))
-        .and_then(|n| n.parse::<u32>().ok())
-        && n <= 9
-    {
-        return Some(0x60 + n);
-    }
-    Some(match k {
-        "up" => 0x26,
-        "down" => 0x28,
-        "left" => 0x25,
-        "right" => 0x27,
-        "home" => 0x24,
-        "end" => 0x23,
-        "pageup" | "pgup" => 0x21,
-        "pagedown" | "pgdn" => 0x22,
-        "insert" | "ins" => 0x2D,
-        "delete" | "del" => 0x2E,
-        "space" => 0x20,
-        "enter" | "return" => 0x0D,
-        "tab" => 0x09,
-        "esc" | "escape" => 0x1B,
-        "backspace" => 0x08,
-        _ => return None,
-    })
 }
 
 impl Config {
@@ -521,7 +375,7 @@ mod tests {
             animation_match_windows: false,
             animation_ms: 333,
             win_up_bypass: false,
-            hotkey: "Win+Shift+F12".into(),
+            legacy_hotkey: None,
             min_aspect_ratio: 2.25,
             excluded_monitors: vec!["BOE0A52".into(), r"\.DISPLAY2".into()],
             excluded_apps: vec!["notepad.exe".into(), "Quote \"me\"".into()],
@@ -550,7 +404,7 @@ mod tests {
         };
         save(&path, &cfg).unwrap();
         assert_eq!(load(&path).unwrap(), cfg);
-        cfg.hotkey = "NotAKey".into();
+        cfg.animation_ms = 5;
         assert!(save(&path, &cfg).is_err());
         assert_eq!(
             load(&path).unwrap().bypass_modifier,
@@ -558,34 +412,6 @@ mod tests {
             "invalid config not written"
         );
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn hotkey_names_roundtrip() {
-        let mut vks: Vec<u32> = (0x30..=0x39)
-            .chain(0x41..=0x5A)
-            .chain(0x70..=0x87)
-            .chain(0x60..=0x69)
-            .collect();
-        vks.extend([
-            0x26, 0x28, 0x25, 0x27, 0x24, 0x23, 0x21, 0x22, 0x2D, 0x2E, 0x20, 0x0D, 0x09, 0x1B, 0x08,
-        ]);
-        for vk in vks {
-            for modifiers in [MOD_CONTROL, MOD_ALT | MOD_SHIFT, MOD_WIN | MOD_CONTROL | MOD_ALT] {
-                let h = Hotkey { modifiers, vk };
-                let s = format_hotkey(&h).unwrap();
-                assert_eq!(parse_hotkey(&s).unwrap(), h, "{s}");
-            }
-        }
-        assert_eq!(
-            format_hotkey(&Hotkey {
-                modifiers: MOD_CONTROL | MOD_ALT,
-                vk: 0x26
-            })
-            .as_deref(),
-            Some("Ctrl+Alt+Up")
-        );
-        assert_eq!(key_name(0xFF), None);
     }
 
     #[test]
@@ -603,7 +429,11 @@ mod tests {
         assert_eq!(c.bypass_modifier, BypassModifier::Alt);
         assert_eq!(c.min_aspect_ratio, 2.0);
         assert_eq!(c.excluded_monitors, vec!["BOE0A52"]);
-        assert_eq!(c.hotkey(), None);
+        assert!(c.legacy_hotkey.is_some(), "old configs with a hotkey still load");
+        assert!(
+            !render(&c).contains("hotkey"),
+            "and the removed setting is dropped on save"
+        );
         assert!(c.snap_on_drag_maximize);
     }
 
@@ -611,7 +441,6 @@ mod tests {
     fn invalid_configs_are_rejected() {
         assert!(parse("bypass_modifer = \"shift\"").is_err(), "typos are reported");
         assert!(parse("already_in_zone = \"sometimes\"").is_err());
-        assert!(parse("hotkey = \"Up\"").is_err());
         assert!(parse("min_aspect_ratio = -1.0").is_err());
         assert!(parse("log_level = \"loud\"").is_err());
         assert!(parse("animation_ms = 5").is_err());
@@ -623,33 +452,6 @@ mod tests {
                 .on_fancyzones_mismatch,
             MismatchAction::Native
         );
-    }
-
-    #[test]
-    fn hotkeys() {
-        assert_eq!(
-            parse_hotkey("Ctrl+Alt+Up").unwrap(),
-            Hotkey {
-                modifiers: MOD_CONTROL | MOD_ALT,
-                vk: 0x26
-            }
-        );
-        assert_eq!(
-            parse_hotkey(" win + shift + m ").unwrap(),
-            Hotkey {
-                modifiers: MOD_WIN | MOD_SHIFT,
-                vk: u32::from(b'M')
-            }
-        );
-        assert_eq!(parse_hotkey("Ctrl+F12").unwrap().vk, 0x7B);
-        assert_eq!(parse_hotkey("Alt+Num5").unwrap().vk, 0x65);
-        assert_eq!(parse_hotkey("Ctrl+PageUp").unwrap().vk, 0x21);
-        assert_eq!(parse_hotkey("Ctrl+7").unwrap().vk, u32::from(b'7'));
-        assert!(parse_hotkey("Ctrl+Alt").is_err());
-        assert!(parse_hotkey("Ctrl+A+B").is_err());
-        assert!(parse_hotkey("Ctrl++A").is_err());
-        assert!(parse_hotkey("Ctrl+F25").is_err());
-        assert!(parse_hotkey("Hyper+A").is_err());
     }
 
     #[test]

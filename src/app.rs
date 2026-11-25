@@ -14,15 +14,12 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, HOT_KEY_MODIFIERS, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey, VK_CONTROL, VK_MENU, VK_SHIFT,
-};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows, GA_ROOT, GetAncestor, GetCursorPos,
-    GetForegroundWindow, GetMessageW, IsWindow, KillTimer, MSG, PostQuitMessage, RegisterClassExW,
-    RegisterWindowMessageW, SPI_SETWORKAREA, SW_MAXIMIZE, SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SetTimer,
-    SetWindowPos, ShowWindowAsync, TranslateMessage, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE,
-    WM_HOTKEY, WM_LBUTTONDBLCLK, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows, GetCursorPos, GetMessageW, IsWindow,
+    KillTimer, MSG, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SPI_SETWORKAREA, SWP_NOACTIVATE,
+    SWP_NOZORDER, SetTimer, SetWindowPos, TranslateMessage, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY,
+    WM_DISPLAYCHANGE, WM_LBUTTONDBLCLK, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
@@ -44,7 +41,6 @@ pub const WINDOW_CLASS: PCWSTR = w!("fz-maximize.hidden-window");
 const WM_APP_TRAY: u32 = WM_APP + 1;
 /// Posted by `fz-maximize --settings` to the running instance.
 pub const WM_APP_OPEN_SETTINGS: u32 = WM_APP + 4;
-const HOTKEY_ID: i32 = 1;
 const PRUNE_THRESHOLD: usize = 2048;
 const DRIFT_TIMER_ID: usize = 7;
 /// Give FancyZones this long after a drop to place + stamp the window.
@@ -98,7 +94,6 @@ pub struct App {
     monitors: MonitorCache,
     engine: Engine,
     tray: Option<Tray>,
-    hotkey_active: bool,
     snaps: u64,
     drift: DriftTracker,
     drift_path: Option<PathBuf>,
@@ -112,7 +107,6 @@ impl App {
         self.user_excluded = normalize_list(&cfg.excluded_apps);
         logging::set_level(&cfg.log_level);
         self.config = cfg;
-        self.register_hotkey();
         self.sync_input_hooks();
     }
 
@@ -137,36 +131,6 @@ impl App {
             }
         } else if !wanted && self.input_hooks.take().is_some() {
             tracing::info!("input hooks removed");
-        }
-    }
-
-    fn register_hotkey(&mut self) {
-        if self.hotkey_active {
-            unsafe {
-                let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_ID);
-            }
-            self.hotkey_active = false;
-        }
-        let Some(hk) = self.config.hotkey() else { return };
-        let mods = HOT_KEY_MODIFIERS(hk.modifiers) | MOD_NOREPEAT;
-        match unsafe { RegisterHotKey(Some(self.hwnd), HOTKEY_ID, mods, hk.vk) } {
-            Ok(()) => {
-                self.hotkey_active = true;
-                tracing::info!(hotkey = %self.config.hotkey, "hotkey registered");
-            }
-            Err(e) => {
-                tracing::warn!(hotkey = %self.config.hotkey, error = %e, "could not register hotkey (in use by another app?)");
-                if let Some(t) = &self.tray {
-                    t.notify(
-                        "fz-maximize",
-                        &format!(
-                            "Hotkey {} is already in use; full-maximize hotkey disabled.",
-                            self.config.hotkey
-                        ),
-                        true,
-                    );
-                }
-            }
         }
     }
 
@@ -490,33 +454,6 @@ impl App {
                 tracing::debug!(hwnd = key, frame = %fr, %zone, ?margins, "corrected frame after snap");
             }
             Err(e) => tracing::debug!(hwnd = key, error = %e, "frame correction failed"),
-        }
-    }
-
-    fn on_hotkey(&mut self) {
-        let fg = unsafe { GetForegroundWindow() };
-        if fg.is_invalid() {
-            return;
-        }
-        let root = unsafe { GetAncestor(fg, GA_ROOT) };
-        if !window::is_trackable(root) {
-            return;
-        }
-        let key = hwnd_key(root);
-        if window::is_zoomed(root) {
-            unsafe {
-                let _ = ShowWindowAsync(root, SW_RESTORE);
-            }
-            tracing::info!(hwnd = key, "hotkey: restore");
-        } else {
-            if !self.engine.is_tracked(key) {
-                self.engine.seed(key, false, window::measure_margins(root));
-            }
-            self.engine.arm_allow_native(key, Instant::now());
-            unsafe {
-                let _ = ShowWindowAsync(root, SW_MAXIMIZE);
-            }
-            tracing::info!(hwnd = key, "hotkey: full-monitor maximize");
         }
     }
 
@@ -981,10 +918,6 @@ fn on_win_event(ev: WinEvent, hwnd: HWND) {
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
-        WM_HOTKEY if wparam.0 == HOTKEY_ID as usize => {
-            with_app(|a| a.on_hotkey());
-            LRESULT(0)
-        }
         WM_APP_TRAY => {
             // NOTIFYICON_VERSION_4: LOWORD(lParam) is the event.
             match (lparam.0 as u32) & 0xFFFF {
@@ -1114,7 +1047,6 @@ pub fn run(config_path: PathBuf, cfg: Config, config_error: Option<String>) -> R
         monitors: MonitorCache::default(),
         engine: Engine::new(),
         tray: None,
-        hotkey_active: false,
         snaps: 0,
         drift: DriftTracker::new(drift_path.as_deref().map(DriftState::load).unwrap_or_default()),
         drift_path,
@@ -1157,11 +1089,6 @@ pub fn run(config_path: PathBuf, cfg: Config, config_error: Option<String>) -> R
     drop(hooks);
     APP.with(|cell| {
         if let Some(mut app) = cell.borrow_mut().take() {
-            if app.hotkey_active {
-                unsafe {
-                    let _ = UnregisterHotKey(Some(app.hwnd), HOTKEY_ID);
-                }
-            }
             app.input_hooks = None;
             app.animator = None;
             app.tray = None;

@@ -154,6 +154,10 @@ cache them, and if the visible frame is off the zone by more than 1 px, issue on
 
 ### 5.4 Hotkey (default `Ctrl`+`Alt`+`Up`)
 
+> **Removed in 0.3.** Win + the bypass key + Up (Win+Shift+Up by default) covers this:
+> the keyboard path for a normal full-screen maximize, alongside the bypass key held
+> with the mouse. Older config files with `hotkey = ...` still load; the key is ignored.
+
 Foreground window: if not maximized → arm the "allow native" token and
 `ShowWindowAsync(SW_MAXIMIZE)`. If maximized → `ShowWindowAsync(SW_RESTORE)` (toggle).
 

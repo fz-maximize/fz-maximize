@@ -17,10 +17,7 @@ use windows::Win32::Graphics::Gdi::{
     HDC, HFONT, HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::{
-    BST_CHECKED, HKCOMB_NONE, HKM_GETHOTKEY, HKM_SETHOTKEY, HKM_SETRULES, HOTKEY_CLASSW, HOTKEYF_ALT, HOTKEYF_CONTROL,
-    HOTKEYF_EXT, HOTKEYF_SHIFT, ICC_HOTKEY_CLASS, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
-};
+use windows::Win32::UI::Controls::{BST_CHECKED, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx};
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, SystemParametersInfoForDpi};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -36,7 +33,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
-use crate::config::{self, AlreadyInZone, AnimationStyle, BypassModifier, Config, Hotkey, MismatchAction};
+use crate::config::{self, AlreadyInZone, AnimationStyle, BypassModifier, Config, MismatchAction};
 
 pub const SETTINGS_CLASS: PCWSTR = w!("fz-maximize.settings");
 
@@ -110,8 +107,6 @@ const ID_MODIFIER: i32 = 110;
 const ID_ALREADY: i32 = 111;
 const ID_DRAG: i32 = 112;
 const ID_LOCK: i32 = 115;
-const ID_HOTKEY: i32 = 113;
-const ID_HOTKEY_WIN: i32 = 114;
 const ID_PRE_MOUSE: i32 = 120;
 const ID_PRE_WINUP: i32 = 121;
 const ID_WINUP_BYPASS: i32 = 122;
@@ -145,7 +140,6 @@ enum Ctl {
     Combo,
     Edit,
     MultiEdit,
-    Hotkey,
     Button,
     DefaultButton,
 }
@@ -174,7 +168,12 @@ struct Builder {
     y: i32,
     group_top: i32,
     next_hint: i32,
+    /// Extra left margin for options nested under a heading or checkbox.
+    indent: i32,
 }
+
+/// How far nested options are indented.
+const INDENT: i32 = 22;
 
 impl Builder {
     #[allow(clippy::too_many_arguments)]
@@ -196,10 +195,15 @@ impl Builder {
     }
     /// Inner left edge / width (inside a group box).
     fn ix(&self) -> i32 {
-        self.x0 + PAD
+        self.x0 + PAD + self.indent
     }
     fn iw(&self) -> i32 {
-        COL_W - 2 * PAD
+        COL_W - 2 * PAD - self.indent
+    }
+    /// Nest the following options (`true`) under the heading or checkbox above them,
+    /// or stop nesting (`false`).
+    fn nested(&mut self, on: bool) {
+        self.indent = if on { INDENT } else { 0 };
     }
     fn group(&mut self, title: &str) {
         self.group_top = self.y;
@@ -256,6 +260,7 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
         y: PAD,
         group_top: 0,
         next_hint: ID_HINT_FIRST + 2,
+        indent: 0,
     };
 
     // ---- left column ----
@@ -280,47 +285,34 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
         ID_LOCK,
         "Lock zone-maximized windows (no resizing; dragging the title bar restores them)",
     );
-    b.labeled(
-        "Hold this for a normal full-screen maximize:",
-        ID_MODIFIER,
-        Ctl::Combo,
-        230,
-    );
-    b.hint("With the Maximize button or a title-bar double-click. It also unlocks a locked window.");
-    b.check(ID_WINUP_BYPASS, "Win + that key + Up: full-screen maximize");
-    b.hint("Replaces Windows' own Win+Shift+Up (stretch vertically). Needs Win+Up caught early.");
-    // Hotkey row: label, hotkey control, "+ Win" checkbox.
-    let (x, iw) = (b.ix(), b.iw());
-    b.push(
-        0,
-        Ctl::Label,
-        "Full-screen maximize hotkey (toggle):",
-        x,
-        b.y + 3,
-        iw - 248,
-        18,
-    );
-    b.push(ID_HOTKEY, Ctl::Hotkey, "", x + iw - 230, b.y, 160, 22);
-    b.push(ID_HOTKEY_WIN, Ctl::Check, "+ Win", x + iw - 62, b.y + 1, 62, 20);
-    b.y += ROW + 2;
-    b.hint("Click the box and press the keys. Backspace clears it (no hotkey).");
+    b.label("Full-screen maximize (instead of the zone):");
+    b.nested(true);
+    b.labeled("Hold this key:", ID_MODIFIER, Ctl::Combo, 230);
+    b.hint("While clicking Maximize or double-clicking the title bar. It also unlocks a locked window.");
+    // The text follows the chosen key ("Win + Shift + Up"); see update_dependent_controls.
+    b.check(ID_WINUP_BYPASS, "Win + Shift + Up");
+    b.hint("Replaces Windows' own use of that shortcut. Needs Win+Up flash prevention.");
+    b.nested(false);
     b.end_group();
 
     b.group("Appearance");
-    b.check(
-        ID_PRE_MOUSE,
-        "No maximize flash: Maximize button and title-bar double-click",
-    );
-    b.check(ID_PRE_WINUP, "No maximize flash: Win+Up");
+    b.label("Prevent the maximize flash for:");
+    b.nested(true);
+    b.check(ID_PRE_MOUSE, "Maximize button and title-bar double-click");
+    b.check(ID_PRE_WINUP, "Win+Up");
     b.hint("Caught before Windows maximizes, these go straight to the zone. Others are corrected after.");
+    b.nested(false);
+    b.label("Animation:");
+    b.nested(true);
     b.check(
         ID_ANIMATE,
         "Animate the window into its zone (like Windows' own maximize)",
     );
-    b.labeled("Animation style:", ID_ANIM_STYLE, Ctl::Combo, 260);
+    b.labeled("Style:", ID_ANIM_STYLE, Ctl::Combo, 260);
     b.check(ID_ANIM_MATCH, "Match Windows' animation speed");
     b.labeled("Otherwise, length (milliseconds, 50-1000):", ID_ANIM_MS, Ctl::Edit, 70);
-    b.hint("Animates the no-flash gestures above. Off while Windows' animation effects are off.");
+    b.hint("Animates the gestures above. Off while Windows' animation effects are off.");
+    b.nested(false);
     b.end_group();
     let left_bottom = b.y;
 
@@ -368,55 +360,6 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
 // ---------------------------------------------------------------------------------------
 // Pure conversions (unit tested)
 // ---------------------------------------------------------------------------------------
-
-/// `Hotkey` -> (hotkey-control WORD, Win checkbox).
-pub fn hotkey_to_control(h: Option<Hotkey>) -> (u16, bool) {
-    let Some(h) = h else { return (0, false) };
-    let mut mods = 0u32;
-    if h.modifiers & config::MOD_SHIFT != 0 {
-        mods |= HOTKEYF_SHIFT;
-    }
-    if h.modifiers & config::MOD_CONTROL != 0 {
-        mods |= HOTKEYF_CONTROL;
-    }
-    if h.modifiers & config::MOD_ALT != 0 {
-        mods |= HOTKEYF_ALT;
-    }
-    // Navigation keys are "extended"; without the flag the control shows "Num 8".
-    if matches!(h.vk, 0x21..=0x28 | 0x2D | 0x2E) {
-        mods |= HOTKEYF_EXT;
-    }
-    (
-        ((mods as u16) << 8) | (h.vk as u16 & 0xFF),
-        h.modifiers & config::MOD_WIN != 0,
-    )
-}
-
-/// Hotkey-control WORD + Win checkbox -> config string (`""` = no hotkey).
-pub fn hotkey_from_control(word: u16, win: bool) -> Result<String, String> {
-    let vk = u32::from(word & 0xFF);
-    let mods = u32::from(word >> 8);
-    if vk == 0 {
-        return Ok(String::new());
-    }
-    let mut modifiers = 0;
-    if mods & HOTKEYF_SHIFT != 0 {
-        modifiers |= config::MOD_SHIFT;
-    }
-    if mods & HOTKEYF_CONTROL != 0 {
-        modifiers |= config::MOD_CONTROL;
-    }
-    if mods & HOTKEYF_ALT != 0 {
-        modifiers |= config::MOD_ALT;
-    }
-    if win {
-        modifiers |= config::MOD_WIN;
-    }
-    if modifiers == 0 {
-        return Err("The hotkey needs at least one modifier (Ctrl, Alt, Shift or Win).".into());
-    }
-    config::format_hotkey(&Hotkey { modifiers, vk }).ok_or_else(|| "That key can't be used for the hotkey.".into())
-}
 
 pub fn lines_to_list(text: &str) -> Vec<String> {
     text.lines()
@@ -481,9 +424,21 @@ fn send(h: HWND, msg: u32, w: usize, l: isize) -> isize {
 
 /// The speed options only matter when animating; the length box only when not matching
 /// Windows.
+/// "Win + Shift + Up" for the chosen full-screen key.
+pub fn win_up_label(key: BypassModifier) -> String {
+    match key {
+        BypassModifier::Shift => "Win + Shift + Up".into(),
+        BypassModifier::Ctrl => "Win + Ctrl + Up".into(),
+        BypassModifier::Alt => "Win + Alt + Up".into(),
+        BypassModifier::None => "Win + (the key above) + Up".into(),
+    }
+}
+
 fn update_dependent_controls(hwnd: HWND) {
     // Win + bypass + Up is handled by the Win+Up interception, with the bypass key.
-    let bypass_key = MODIFIERS[combo_index(hwnd, ID_MODIFIER).min(MODIFIERS.len() - 1)].1 != BypassModifier::None;
+    let key = MODIFIERS[combo_index(hwnd, ID_MODIFIER).min(MODIFIERS.len() - 1)].1;
+    let bypass_key = key != BypassModifier::None;
+    set_text(hwnd, ID_WINUP_BYPASS, &win_up_label(key));
     let win_up_bypass = checked(hwnd, ID_PRE_WINUP) && bypass_key;
     // Only the gestures caught early (no flash) are animated.
     let can_animate = checked(hwnd, ID_PRE_MOUSE) || checked(hwnd, ID_PRE_WINUP);
@@ -547,7 +502,6 @@ fn create_controls(hwnd: HWND, specs: &[Spec]) {
                 (ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN) as u32 | WS_VSCROLL.0 | WS_TABSTOP.0,
                 WS_EX_CLIENTEDGE.0,
             ),
-            Ctl::Hotkey => (HOTKEY_CLASSW, WS_TABSTOP.0, 0),
             Ctl::Button => (w!("BUTTON"), BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0),
             Ctl::DefaultButton => (w!("BUTTON"), BS_DEFPUSHBUTTON as u32 | WS_TABSTOP.0, 0),
         };
@@ -646,18 +600,6 @@ fn fill(hwnd: HWND, ctx: &Context) {
     set_text(hwnd, ID_ASPECT, &format!("{}", c.min_aspect_ratio));
     set_text(hwnd, ID_MONITORS, &list_to_lines(&c.excluded_monitors));
     set_text(hwnd, ID_APPS, &list_to_lines(&c.excluded_apps));
-
-    let hk = item(hwnd, ID_HOTKEY);
-    // Require a modifier; a bare key is replaced by Ctrl+Alt+key.
-    send(
-        hk,
-        HKM_SETRULES,
-        HKCOMB_NONE as usize,
-        (HOTKEYF_CONTROL | HOTKEYF_ALT) as isize,
-    );
-    let (word, win) = hotkey_to_control(c.hotkey());
-    send(hk, HKM_SETHOTKEY, word as usize, 0);
-    set_check(hwnd, ID_HOTKEY_WIN, win);
 }
 
 /// Read the controls back into a `Config` (plus the autostart checkbox).
@@ -679,7 +621,6 @@ fn read(hwnd: HWND) -> Result<(Config, bool), String> {
         Err(_) if match_windows => Config::default().animation_ms,
         Err(_) => return Err(format!("'{ms_text}' is not a whole number of milliseconds (50-1000).")),
     };
-    let word = send(item(hwnd, ID_HOTKEY), HKM_GETHOTKEY, 0, 0) as u16;
     let cfg = Config {
         bypass_modifier: MODIFIERS[combo_index(hwnd, ID_MODIFIER).min(MODIFIERS.len() - 1)].1,
         already_in_zone: ALREADY[combo_index(hwnd, ID_ALREADY).min(ALREADY.len() - 1)].1,
@@ -689,10 +630,10 @@ fn read(hwnd: HWND) -> Result<(Config, bool), String> {
         preempt_win_up: checked(hwnd, ID_PRE_WINUP),
         win_up_bypass: checked(hwnd, ID_WINUP_BYPASS),
         animate_maximize: checked(hwnd, ID_ANIMATE),
+        legacy_hotkey: None,
         animation_style: STYLES[combo_index(hwnd, ID_ANIM_STYLE).min(STYLES.len() - 1)].1,
         animation_match_windows: match_windows,
         animation_ms,
-        hotkey: hotkey_from_control(word, checked(hwnd, ID_HOTKEY_WIN))?,
         min_aspect_ratio,
         excluded_monitors: lines_to_list(&text(hwnd, ID_MONITORS)),
         excluded_apps: lines_to_list(&text(hwnd, ID_APPS)),
@@ -854,7 +795,7 @@ fn register_class() -> bool {
     *REGISTERED.get_or_init(|| unsafe {
         let icc = INITCOMMONCONTROLSEX {
             dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-            dwICC: ICC_STANDARD_CLASSES | ICC_HOTKEY_CLASS,
+            dwICC: ICC_STANDARD_CLASSES,
         };
         let _ = InitCommonControlsEx(&icc);
         let hinstance = GetModuleHandleW(None).unwrap_or_default();
@@ -994,22 +935,6 @@ mod tests {
     }
 
     #[test]
-    fn hotkey_control_roundtrip() {
-        for s in ["Ctrl+Alt+Up", "Win+Shift+F12", "Alt+Home", "Ctrl+Shift+A", "Ctrl+Num5"] {
-            let hk = config::parse_hotkey(s).unwrap();
-            let (word, win) = hotkey_to_control(Some(hk));
-            assert_eq!(hotkey_from_control(word, win).unwrap(), s, "{s}");
-        }
-        // Arrow keys carry the extended flag so the control shows "Up", not "Num 8".
-        let (word, _) = hotkey_to_control(config::parse_hotkey("Ctrl+Up").ok());
-        assert_ne!(u32::from(word >> 8) & HOTKEYF_EXT, 0);
-        assert_eq!(hotkey_to_control(None), (0, false));
-        assert_eq!(hotkey_from_control(0, false).unwrap(), "");
-        assert!(hotkey_from_control(0x41, false).is_err(), "bare key rejected");
-        assert_eq!(hotkey_from_control(0x41, true).unwrap(), "Win+A");
-    }
-
-    #[test]
     fn lists() {
         assert_eq!(lines_to_list(" a \r\n\r\nb, c\n"), vec!["a", "b", "c"]);
         assert_eq!(list_to_lines(&["x".into(), "y".into()]), "x\r\ny");
@@ -1055,15 +980,7 @@ mod tests {
             assert!(s.x >= 0 && s.x + s.w <= WIDTH, "{:?} overflows", s.text);
             assert!(s.y + s.h.min(40) <= height, "{:?} below the window", s.text);
         }
-        for id in [
-            ID_OK,
-            ID_CANCEL,
-            ID_APPLY,
-            ID_MODIFIER,
-            ID_HOTKEY,
-            ID_AUTOSTART,
-            ID_MONITORS,
-        ] {
+        for id in [ID_OK, ID_CANCEL, ID_APPLY, ID_MODIFIER, ID_AUTOSTART, ID_MONITORS] {
             assert!(specs.iter().any(|s| s.id == id), "missing control {id}");
         }
     }

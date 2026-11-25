@@ -356,7 +356,7 @@ fn chord(keys: &[VIRTUAL_KEY]) {
 
 #[test]
 #[ignore = "drives the live desktop and injects keystrokes; run with `task e2e`"]
-fn bypass_modifier_hotkey_and_win_up() {
+fn bypass_modifier_and_win_up() {
     let Some((_guard, h, zones, log)) = setup("fz-maximize-e2e-keys.log") else {
         return;
     };
@@ -386,27 +386,7 @@ fn bypass_modifier_hotkey_and_win_up() {
     assert!(wait_until(Duration::from_secs(2), || !zoomed(h)));
     std::thread::sleep(Duration::from_millis(900));
 
-    // 2. Hotkey (default Ctrl+Alt+Up) -> native maximize; again -> restore.
-    force_foreground(h);
-    std::thread::sleep(Duration::from_millis(200));
-    chord(&[VK_CONTROL, VK_MENU, VK_UP]);
-    assert!(
-        wait_until(Duration::from_secs(2), || zoomed(h)),
-        "hotkey should natively maximize the foreground window; see {}",
-        log.display()
-    );
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(zoomed(h), "hotkey maximize must not be redirected into a zone");
-    eprintln!("hotkey: natively maximized");
-    chord(&[VK_CONTROL, VK_MENU, VK_UP]);
-    assert!(
-        wait_until(Duration::from_secs(2), || !zoomed(h)),
-        "hotkey again should restore"
-    );
-    eprintln!("hotkey again: restored");
-    std::thread::sleep(Duration::from_millis(900));
-
-    // 3. Win+Up (the Windows maximize shortcut) -> redirected into the zone.
+    // 2. Win+Up (the Windows maximize shortcut) -> redirected into the zone.
     place_inside(h, &zone);
     force_foreground(h);
     std::thread::sleep(Duration::from_millis(200));

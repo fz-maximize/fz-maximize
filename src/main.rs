@@ -54,8 +54,8 @@ OPTIONS:
     --config <path>  use this config file instead of %APPDATA%\\fz-maximize\\config.toml
     --json           machine-readable --dump output
 
-Holding Shift while maximizing (or pressing the hotkey, default Ctrl+Alt+Up) gives the
-normal full-monitor maximize.";
+Holding Shift while maximizing (or pressing Win+Shift+Up) gives the normal full-monitor
+maximize; the key is configurable.";
 
 #[derive(Debug, PartialEq, Eq)]
 enum Cmd {

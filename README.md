@@ -142,6 +142,8 @@ panels included. To keep normal maximize on a screen, do one of these:
 | `task check` / `task ci` | fmt + clippy + tests (+ release build) |
 | `task upstream:check` / `upstream:accept` | diff mirrored PowerToys sources against upstream / re-pin the baseline |
 | `task install` / `task uninstall` | install silently via the real installer / uninstall |
+| `task install:wizard` / `task uninstall:wizard` | run the installer / uninstaller with its normal UI, as users see it |
+| `task install:wizard:downloaded` | same, marked as downloaded, to also see the SmartScreen warning |
 | `task start` / `stop` / `restart` | control the installed copy |
 | `task logs` (`task logs -- -Wait`) | tail the log |
 | `task settings` | open the settings window of the running instance |

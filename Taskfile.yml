@@ -139,6 +139,28 @@ tasks:
       # \$ keeps Task's shell from expanding the PowerShell variable (see `try`).
       - '{{.PS}} "\$u = ''{{.INSTALL_DIR}}\unins000.exe''; if (Test-Path \$u) { Start-Process -Wait -FilePath \$u -ArgumentList ''/VERYSILENT'',''/SUPPRESSMSGBOXES'',''/NORESTART''; ''uninstalled'' } else { ''not installed'' }"'
 
+  install:wizard:
+    desc: Run the installer with its normal setup wizard, as a user who double-clicks it (installs for real)
+    deps: [package:installer]
+    cmds:
+      # `start` goes through the Windows shell, like a double-click in Explorer.
+      - cmd /c start "" /wait "dist\{{.BIN}}-{{.VERSION}}-x64-setup.exe"
+
+  install:wizard:downloaded:
+    desc: Same as install:wizard, but marked as downloaded from the internet, so you also see the SmartScreen warning for unsigned files
+    deps: [package:installer]
+    vars:
+      SETUP: '{{.BIN}}-{{.VERSION}}-x64-setup.exe'
+    cmds:
+      # Copy to %TEMP% and add the "Mark of the Web" (Zone.Identifier stream, ZoneId=3 =
+      # Internet) that browsers attach to downloads; the shell then runs its SmartScreen check.
+      - cmd /c "copy /y dist\{{.SETUP}} %TEMP%\{{.SETUP}} >nul && (echo [ZoneTransfer]& echo ZoneId=3)>%TEMP%\{{.SETUP}}:Zone.Identifier && start "" /wait %TEMP%\{{.SETUP}}"
+
+  uninstall:wizard:
+    desc: Run the uninstaller with its normal UI, as from Settings > Apps
+    cmds:
+      - cmd /c "if exist "{{.INSTALL_DIR}}\unins000.exe" (start "" /wait "{{.INSTALL_DIR}}\unins000.exe") else (echo not installed)"
+
   start:
     desc: Start the installed copy in the background
     preconditions:
@@ -219,7 +241,10 @@ tasks:
       # Windows' own bsdtar (System32) writes zip files; Git's GNU tar can't. Avoids
       # Compress-Archive, which breaks when Windows PowerShell inherits PS7's module path.
       - cmd /c "if not exist dist mkdir dist"
-      - '"{{.SYSTEMROOT}}\System32\tar.exe" -a -cf "{{.ZIP}}" -C target/release {{.BIN}}.exe -C ../.. README.md LICENSE THIRD_PARTY_NOTICES.md docs'
+      # $SYSTEMROOT (a shell variable) rather than a .SYSTEMROOT template variable:
+      # template lookup is case-sensitive and the name's case depends on the parent shell
+      # (Git Bash: SYSTEMROOT, PowerShell/cmd: SystemRoot); the shell variable works for both.
+      - '"$SYSTEMROOT\System32\tar.exe" -a -cf "{{.ZIP}}" -C target/release {{.BIN}}.exe -C ../.. README.md LICENSE THIRD_PARTY_NOTICES.md docs'
       - cmd: echo "Created {{.ZIP}}"
         silent: true
 

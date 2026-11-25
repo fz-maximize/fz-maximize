@@ -6,6 +6,7 @@
 // Release builds have no console window; debug builds keep one for logging.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod animate;
 mod app;
 mod autostart;
 mod config;

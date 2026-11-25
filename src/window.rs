@@ -326,6 +326,17 @@ pub fn restore_to(hwnd: HWND, target: Rect, all_monitors_same_dpi: bool) -> wind
     unsafe { SetWindowPlacement(hwnd, &p) }
 }
 
+/// Whether we're allowed to move `hwnd`: re-applies its current placement unchanged.
+/// UIPI rejects this for windows of elevated processes, which is exactly the case to
+/// detect (an animation into a zone the window then can't move to would look broken).
+pub fn can_place(hwnd: HWND) -> bool {
+    let Some(mut p) = placement(hwnd) else {
+        return false;
+    };
+    p.flags.0 |= WPF_ASYNCWINDOWPLACEMENT.0;
+    unsafe { SetWindowPlacement(hwnd, &p) }.is_ok()
+}
+
 /// Bring `hwnd` to the foreground after we swallowed the click that would have activated
 /// it. Same trick as FancyZones' `SwitchToWindow`: a zero-length synthetic mouse input
 /// makes us the process that "received the last input", which permits

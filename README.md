@@ -88,6 +88,11 @@ don't report themselves to Windows, programmatic maximizes) are still corrected 
 after Windows maximizes, so the maximize animation briefly shows for those.
 Interception can be turned off with `preempt_mouse_maximize` / `preempt_win_up`.
 
+Those intercepted moves are **animated** into the zone (`animate_maximize`,
+`animation_ms`), so they feel like Windows' own maximize. The window's content is never
+scaled (no stretched text): it's shown at its real size, pinned to the corners of the
+growing rectangle, like a live resize. Skipped when Windows' animation effects are off.
+
 ## Settings
 
 Tray icon → **Settings...** (or `task settings`) opens a settings window with every
@@ -106,6 +111,8 @@ snap_on_drag_maximize = true
 preempt_mouse_maximize = true      # catch max button / title-bar double-click before Windows (no flash)
 preempt_win_up = true              # same for Win+Up
 win_up_bypass = true               # Win + bypass key + Up = full maximize (replaces Win+Shift+Up stretch)
+animate_maximize = true            # animate intercepted maximizes into the zone
+animation_ms = 200                 # animation length (50-1000)
 hotkey = "Ctrl+Alt+Up"             # "" disables
 min_aspect_ratio = 0.0             # e.g. 2.0 = only ultrawide monitors
 excluded_monitors = []             # e.g. ["BOE0A52"] (ids from `task dump`)

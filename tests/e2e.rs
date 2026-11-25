@@ -1131,3 +1131,236 @@ fn settings_window_saves_and_applies() {
     );
     eprintln!("applied live: Ctrl bypasses, Shift snaps");
 }
+
+/// Save a screen region as a 32-bit BMP (for looking at an animation frame).
+fn capture_bmp(r: &R, path: &std::path::Path) {
+    use windows::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS,
+        DeleteDC, DeleteObject, GetDC, GetDIBits, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject,
+    };
+    let (w, h) = (r.r - r.l, r.b - r.t);
+    let mut pixels = vec![0u8; (w * h * 4) as usize];
+    unsafe {
+        let screen = GetDC(None);
+        let mem = CreateCompatibleDC(Some(screen));
+        let bmp = CreateCompatibleBitmap(screen, w, h);
+        let old = SelectObject(mem, HGDIOBJ(bmp.0));
+        let _ = BitBlt(mem, 0, 0, w, h, Some(screen), r.l, r.t, SRCCOPY);
+        let mut bi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        GetDIBits(
+            mem,
+            bmp,
+            0,
+            h as u32,
+            Some(pixels.as_mut_ptr().cast()),
+            &mut bi,
+            DIB_RGB_COLORS,
+        );
+        SelectObject(mem, old);
+        let _ = DeleteObject(HGDIOBJ(bmp.0));
+        let _ = DeleteDC(mem);
+        ReleaseDC(None, screen);
+    }
+    let mut f = Vec::with_capacity(54 + pixels.len());
+    let file_size = 54 + pixels.len() as u32;
+    f.extend_from_slice(b"BM");
+    f.extend_from_slice(&file_size.to_le_bytes());
+    f.extend_from_slice(&0u32.to_le_bytes());
+    f.extend_from_slice(&54u32.to_le_bytes());
+    f.extend_from_slice(&40u32.to_le_bytes());
+    f.extend_from_slice(&w.to_le_bytes());
+    f.extend_from_slice(&(-h).to_le_bytes());
+    f.extend_from_slice(&1u16.to_le_bytes());
+    f.extend_from_slice(&32u16.to_le_bytes());
+    f.extend_from_slice(&[0u8; 24]);
+    f.extend_from_slice(&pixels);
+    std::fs::write(path, f).unwrap();
+}
+
+/// What happened during one animated gesture, sampled every few milliseconds.
+struct AnimationTrace {
+    overlay_first_seen: Option<Duration>,
+    overlay_last_seen: Option<Duration>,
+    window_reached_target: Option<Duration>,
+    maximized_at_some_point: bool,
+}
+
+/// Run `gesture` and sample the overlay and the window until both have settled.
+fn trace_animation(
+    h: HWND,
+    target: &R,
+    frame_path: Option<&std::path::Path>,
+    gesture: impl FnOnce(),
+) -> AnimationTrace {
+    let overlay_visible = || {
+        unsafe { FindWindowW(w!("fz-maximize.animation"), None) }
+            .ok()
+            .is_some_and(|o| unsafe { IsWindowVisible(o) }.as_bool())
+    };
+    let watch = ZoomWatch::start(h);
+    let start = Instant::now();
+    gesture();
+    let mut t = AnimationTrace {
+        overlay_first_seen: None,
+        overlay_last_seen: None,
+        window_reached_target: None,
+        maximized_at_some_point: false,
+    };
+    let mut captured = false;
+    while start.elapsed() < Duration::from_secs(3) {
+        let now = start.elapsed();
+        if overlay_visible() {
+            t.overlay_first_seen.get_or_insert(now);
+            t.overlay_last_seen = Some(now);
+            if let (Some(path), Some(first), false) = (frame_path, t.overlay_first_seen, captured)
+                && now >= first + Duration::from_millis(60)
+            {
+                let region = R {
+                    l: target.l.min(window_rect(h).l),
+                    t: target.t.min(window_rect(h).t),
+                    r: target.r.max(window_rect(h).r),
+                    b: target.b.max(window_rect(h).b),
+                };
+                capture_bmp(&region, path);
+                captured = true;
+            }
+        }
+        if t.window_reached_target.is_none() && window_rect(h).near(target, 2) {
+            t.window_reached_target = Some(now);
+        }
+        if t.window_reached_target.is_some() && !overlay_visible() && now > Duration::from_millis(400) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(3));
+    }
+    t.maximized_at_some_point = watch.finish();
+    t
+}
+
+#[test]
+#[ignore = "drives the live desktop with real clicks; run with `task e2e`"]
+fn maximize_animates_into_zone_and_back() {
+    let Some((_guard, h, zones, log)) = setup_with("fz-maximize-e2e-anim.log", Some("animation_ms = 250\n")) else {
+        return;
+    };
+    let zone = zones[1];
+    let mut original = POINT::default();
+    unsafe { GetCursorPos(&mut original).unwrap() };
+    let _mouse = MouseGuard(original);
+
+    // Grow: maximize button. The real window must only move at the END (preview covers it).
+    let before = place_inside(h, &zone);
+    force_foreground(h);
+    std::thread::sleep(Duration::from_millis(500));
+    let (max_btn, caption) = title_bar_buttons(h);
+    let frame_path = std::env::temp_dir().join("fz-maximize-animation-frame.bmp");
+    let grow = trace_animation(h, &zone_window_rect(h, &zone), Some(&frame_path), || {
+        click(h, max_btn.x, max_btn.y)
+    });
+    eprintln!(
+        "grow: overlay {:?}..{:?}, window reached zone at {:?}, frame saved to {}",
+        grow.overlay_first_seen,
+        grow.overlay_last_seen,
+        grow.window_reached_target,
+        frame_path.display()
+    );
+    assert_covered_animation("grow", &grow);
+    assert!(frame(h).near(&zone, 1), "final frame {:?} != zone {zone:?}", frame(h));
+    assert!(
+        !grow.maximized_at_some_point,
+        "window was maximized at some point (flash)"
+    );
+    assert!(foreground_is(h), "window should be active after the snap");
+    std::thread::sleep(Duration::from_millis(900));
+
+    // Shrink: double-click toggles back to the previous size, also animated.
+    let (_, caption_now) = title_bar_buttons(h);
+    let shrink = trace_animation(h, &before, None, || double_click(h, caption_now));
+    eprintln!(
+        "shrink: overlay {:?}..{:?}, window reached previous size at {:?}",
+        shrink.overlay_first_seen, shrink.overlay_last_seen, shrink.window_reached_target
+    );
+    assert_covered_animation("shrink", &shrink);
+    assert!(
+        window_rect(h).near(&before, 2),
+        "expected {before:?}, got {:?}",
+        window_rect(h)
+    );
+    assert!(!shrink.maximized_at_some_point);
+    let _ = (caption, log);
+}
+
+#[test]
+#[ignore = "drives the live desktop with real clicks; run with `task e2e`"]
+fn animation_can_be_turned_off() {
+    let Some((_guard, h, zones, _log)) = setup_with("fz-maximize-e2e-noanim.log", Some("animate_maximize = false\n"))
+    else {
+        return;
+    };
+    let zone = zones[1];
+    let mut original = POINT::default();
+    unsafe { GetCursorPos(&mut original).unwrap() };
+    let _mouse = MouseGuard(original);
+    place_inside(h, &zone);
+    force_foreground(h);
+    std::thread::sleep(Duration::from_millis(500));
+    let (max_btn, _) = title_bar_buttons(h);
+    let t = trace_animation(h, &zone_window_rect(h, &zone), None, || click(h, max_btn.x, max_btn.y));
+    assert!(
+        t.overlay_first_seen.is_none(),
+        "animation overlay shown although animate_maximize = false"
+    );
+    assert!(frame(h).near(&zone, 1), "final frame {:?} != zone {zone:?}", frame(h));
+    eprintln!(
+        "animation off: no overlay; window reached the zone at {:?}",
+        t.window_reached_target
+    );
+}
+
+/// The overlay must already be up when the real window moves (so the move is hidden)
+/// and stay up for most of the 250 ms animation.
+fn assert_covered_animation(what: &str, t: &AnimationTrace) {
+    let first = t
+        .overlay_first_seen
+        .unwrap_or_else(|| panic!("{what}: no animation overlay appeared"));
+    let last = t.overlay_last_seen.unwrap();
+    let reached = t
+        .window_reached_target
+        .unwrap_or_else(|| panic!("{what}: window never reached its target"));
+    assert!(
+        first <= reached,
+        "{what}: window moved at {reached:?}, before the overlay covered it ({first:?})"
+    );
+    assert!(
+        last >= reached,
+        "{what}: overlay gone ({last:?}) before the window arrived ({reached:?})"
+    );
+    assert!(
+        last - first >= Duration::from_millis(180),
+        "{what}: animation lasted only {:?}",
+        last - first
+    );
+}
+
+/// The window rect that puts the visible frame exactly on `zone` (adds the invisible
+/// borders measured from the window right now).
+fn zone_window_rect(h: HWND, zone: &R) -> R {
+    let (w, f) = (window_rect(h), frame(h));
+    R {
+        l: zone.l - (f.l - w.l),
+        t: zone.t - (f.t - w.t),
+        r: zone.r + (w.r - f.r),
+        b: zone.b + (w.b - f.b),
+    }
+}

@@ -51,6 +51,11 @@ pub struct Config {
     pub preempt_mouse_maximize: bool,
     /// Intercept Win+Up the same way (low-level keyboard hook).
     pub preempt_win_up: bool,
+    /// Animate intercepted maximizes into the zone (a live preview, like Windows' own
+    /// maximize animation). Skipped automatically when Windows' animation effects are off.
+    pub animate_maximize: bool,
+    /// Animation length in milliseconds (50-1000).
+    pub animation_ms: u32,
     /// Win + bypass modifier + Up (Win+Shift+Up by default) does a normal full-monitor
     /// maximize, like Shift + maximize button. Replaces Windows' own Win+Shift+Up
     /// ("stretch vertically"); set false to keep that.
@@ -89,6 +94,8 @@ impl Default for Config {
             snap_on_drag_maximize: true,
             preempt_mouse_maximize: true,
             preempt_win_up: true,
+            animate_maximize: true,
+            animation_ms: 200,
             win_up_bypass: true,
             hotkey: "Ctrl+Alt+Up".into(),
             min_aspect_ratio: 0.0,
@@ -127,6 +134,11 @@ snap_on_drag_maximize = true
 # corrected afterwards.
 preempt_mouse_maximize = true
 preempt_win_up = true
+
+# Animate the window into its zone, like Windows' own maximize animation (only for the
+# gestures above; skipped when animations are turned off in Windows).
+animate_maximize = true
+animation_ms = 200
 
 # Win + the bypass modifier + Up (Win+Shift+Up by default) gives a normal full-monitor
 # maximize, like Shift + maximize button. This replaces Windows' own Win+Shift+Up
@@ -242,6 +254,9 @@ impl Config {
     pub fn validate(&self) -> Result<(), String> {
         if !self.hotkey.trim().is_empty() {
             parse_hotkey(&self.hotkey)?;
+        }
+        if !(50..=1000).contains(&self.animation_ms) {
+            return Err("animation_ms must be between 50 and 1000".into());
         }
         if !(self.min_aspect_ratio.is_finite() && self.min_aspect_ratio >= 0.0) {
             return Err("min_aspect_ratio must be a non-negative number".into());
@@ -417,6 +432,8 @@ mod tests {
             snap_on_drag_maximize: false,
             preempt_mouse_maximize: false,
             preempt_win_up: false,
+            animate_maximize: false,
+            animation_ms: 333,
             win_up_bypass: false,
             hotkey: "Win+Shift+F12".into(),
             min_aspect_ratio: 2.25,
@@ -511,6 +528,8 @@ mod tests {
         assert!(parse("hotkey = \"Up\"").is_err());
         assert!(parse("min_aspect_ratio = -1.0").is_err());
         assert!(parse("log_level = \"loud\"").is_err());
+        assert!(parse("animation_ms = 5").is_err());
+        assert!(parse("animation_ms = 5000").is_err());
         assert!(parse("on_fancyzones_mismatch = \"panic\"").is_err());
         assert_eq!(
             parse("on_fancyzones_mismatch = \"native\"")

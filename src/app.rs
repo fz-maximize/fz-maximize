@@ -26,6 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, PCWSTR, w};
 
+use crate::animate::{self, Animator, Plan};
 use crate::config::{self, BypassModifier, Config, MismatchAction};
 use crate::drift::{self, DriftState, DriftTracker, Outcome, Record};
 use crate::engine::{Decision, Engine, MaximizeInput, NativeReason, Observation, Options};
@@ -103,6 +104,7 @@ pub struct App {
     drift_path: Option<PathBuf>,
     probes: HashMap<isize, DragProbe>,
     input_hooks: Option<InputHooks>,
+    animator: Option<Animator>,
 }
 
 impl App {
@@ -200,7 +202,7 @@ impl App {
         let Some(normal) = window::normal_rect_screen(hwnd) else {
             return;
         };
-        self.redirect(hwnd, normal, true, "maximize (corrected after the fact)", now);
+        self.redirect(hwnd, normal, true, false, "maximize (corrected after the fact)", now);
     }
 
     /// A gesture the input hooks intercepted before Windows maximized the window: it is
@@ -243,7 +245,7 @@ impl App {
             self.engine.seed(key, false, margins);
         }
         let placed = match window::window_rect(hwnd) {
-            Some(normal) => self.redirect(hwnd, normal, false, kind.label(), now),
+            Some(normal) => self.redirect(hwnd, normal, false, true, kind.label(), now),
             None => false,
         };
         if placed {
@@ -262,9 +264,47 @@ impl App {
         window::post_sc_maximize(hwnd);
     }
 
+    /// Move `hwnd` (normal state) into `target`, animated when `animate` is set, the
+    /// setting is on, Windows animations are on, and the preview can cover the window.
+    fn place(&mut self, hwnd: HWND, target: Rect, same_dpi: bool, animate: bool) -> windows::core::Result<()> {
+        if animate
+            && self.config.animate_maximize
+            && animate::system_animations_enabled()
+            && let Some(from) = window::window_rect(hwnd)
+        {
+            let plan = animate::plan(&from, &target);
+            // Don't animate into a zone the window can't be moved to (elevated apps).
+            if plan != Plan::NoAnimation && window::can_place(hwnd) {
+                if self.animator.is_none() {
+                    self.animator = Animator::start();
+                }
+                if let Some(animator) = &self.animator {
+                    // The animation thread moves the window at the right moment.
+                    animator.animate(animate::Request {
+                        target: hwnd_key(hwnd),
+                        from,
+                        to: target,
+                        duration: Duration::from_millis(u64::from(self.config.animation_ms)),
+                        all_monitors_same_dpi: same_dpi,
+                    });
+                    return Ok(());
+                }
+            }
+        }
+        window::restore_to(hwnd, target, same_dpi)
+    }
+
     /// Shared decision and placement. `normal` is the window rect to decide from (its
     /// pre-maximize rect). Returns true when the window was placed (zone or toggle).
-    fn redirect(&mut self, hwnd: HWND, normal: Rect, consider_drag: bool, source: &str, now: Instant) -> bool {
+    fn redirect(
+        &mut self,
+        hwnd: HWND,
+        normal: Rect,
+        consider_drag: bool,
+        animate: bool,
+        source: &str,
+        now: Instant,
+    ) -> bool {
         let key = hwnd_key(hwnd);
         self.store.refresh();
         let fz = self.store.data();
@@ -337,7 +377,7 @@ impl App {
                 zone,
                 target,
                 pre_snap,
-            } => match window::restore_to(hwnd, target, same_dpi) {
+            } => match self.place(hwnd, target, same_dpi, animate) {
                 Ok(()) => {
                     self.engine.commit_snap(key, zone, target, pre_snap, now);
                     self.snaps += 1;
@@ -358,7 +398,7 @@ impl App {
                     false
                 }
             },
-            Decision::Restore { target } => match window::restore_to(hwnd, target, same_dpi) {
+            Decision::Restore { target } => match self.place(hwnd, target, same_dpi, animate) {
                 Ok(()) => {
                     self.engine.commit_restore(key, now);
                     tracing::info!(hwnd = key, exe, %target, source, "restored to pre-snap size (toggle)");
@@ -1023,6 +1063,7 @@ pub fn run(config_path: PathBuf, cfg: Config, config_error: Option<String>) -> R
         drift_path,
         probes: HashMap::new(),
         input_hooks: None,
+        animator: None,
     };
     APP.with(|cell| *cell.borrow_mut() = Some(app));
 
@@ -1065,6 +1106,7 @@ pub fn run(config_path: PathBuf, cfg: Config, config_error: Option<String>) -> R
                 }
             }
             app.input_hooks = None;
+            app.animator = None;
             app.tray = None;
             tracing::info!(snaps = app.snaps, "exiting");
         }

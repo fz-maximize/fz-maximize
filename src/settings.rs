@@ -109,6 +109,8 @@ const ID_HOTKEY_WIN: i32 = 114;
 const ID_PRE_MOUSE: i32 = 120;
 const ID_PRE_WINUP: i32 = 121;
 const ID_WINUP_BYPASS: i32 = 122;
+const ID_ANIMATE: i32 = 123;
+const ID_ANIM_MS: i32 = 124;
 const ID_ASPECT: i32 = 130;
 const ID_MONITORS: i32 = 131;
 const ID_APPS: i32 = 132;
@@ -292,6 +294,11 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
     );
     b.check(ID_PRE_WINUP, "Catch Win+Up early");
     b.check(ID_WINUP_BYPASS, "Win + the key above + Up: full-screen maximize");
+    b.check(
+        ID_ANIMATE,
+        "Animate the window into its zone (like Windows' own maximize)",
+    );
+    b.labeled("Animation length (milliseconds, 50-1000):", ID_ANIM_MS, Ctl::Edit, 70);
     b.hint("Caught early, windows go straight to their zone without the maximize animation.");
     b.hint("The Win + key + Up option replaces Windows' own Win+Shift+Up (stretch vertically).");
     b.end_group();
@@ -586,6 +593,8 @@ fn fill(hwnd: HWND, ctx: &Context) {
     set_check(hwnd, ID_PRE_MOUSE, c.preempt_mouse_maximize);
     set_check(hwnd, ID_PRE_WINUP, c.preempt_win_up);
     set_check(hwnd, ID_WINUP_BYPASS, c.win_up_bypass);
+    set_check(hwnd, ID_ANIMATE, c.animate_maximize);
+    set_text(hwnd, ID_ANIM_MS, &c.animation_ms.to_string());
     set_check(hwnd, ID_FZ_EXCLUDED, c.respect_fancyzones_excluded_apps);
     set_check(hwnd, ID_FZ_DEFAULT, c.use_fancyzones_default_layout);
     set_check(hwnd, ID_FZ_REQUIRE, c.require_fancyzones_enabled);
@@ -619,6 +628,11 @@ fn read(hwnd: HWND) -> Result<(Config, bool), String> {
             .parse()
             .map_err(|_| format!("'{aspect_text}' is not a number (monitor width / height)."))?
     };
+    let ms_text = text(hwnd, ID_ANIM_MS);
+    let animation_ms: u32 = ms_text
+        .trim()
+        .parse()
+        .map_err(|_| format!("'{ms_text}' is not a whole number of milliseconds (50-1000)."))?;
     let word = send(item(hwnd, ID_HOTKEY), HKM_GETHOTKEY, 0, 0) as u16;
     let cfg = Config {
         bypass_modifier: MODIFIERS[combo_index(hwnd, ID_MODIFIER).min(MODIFIERS.len() - 1)].1,
@@ -627,6 +641,8 @@ fn read(hwnd: HWND) -> Result<(Config, bool), String> {
         preempt_mouse_maximize: checked(hwnd, ID_PRE_MOUSE),
         preempt_win_up: checked(hwnd, ID_PRE_WINUP),
         win_up_bypass: checked(hwnd, ID_WINUP_BYPASS),
+        animate_maximize: checked(hwnd, ID_ANIMATE),
+        animation_ms,
         hotkey: hotkey_from_control(word, checked(hwnd, ID_HOTKEY_WIN))?,
         min_aspect_ratio,
         excluded_monitors: lines_to_list(&text(hwnd, ID_MONITORS)),

@@ -1526,9 +1526,12 @@ fn measure_windows_maximize_animation() {
 fn animates_wherever_the_window_starts() {
     // Real windows rarely sit neatly inside a zone. These shapes come from real use: wider
     // than the zone and sticking out of both sides, and mostly in one zone but reaching
-    // into the next. Each must animate (both ways), not just jump.
-    let Some((_guard, h, zones, _log)) = setup_with("fz-maximize-e2e-anim-any.log", Some("animation_ms = 250\n"))
-    else {
+    // into the next. Each must animate (both ways), not just jump. Uses the Morph style
+    // (the other animation tests use this machine's default).
+    let Some((_guard, h, zones, _log)) = setup_with(
+        "fz-maximize-e2e-anim-any.log",
+        Some("animation_ms = 250\nanimation_style = \"morph\"\n"),
+    ) else {
         return;
     };
     let mut original = POINT::default();
@@ -1587,5 +1590,231 @@ fn animates_wherever_the_window_starts() {
             window_rect(h)
         );
         std::thread::sleep(Duration::from_millis(700));
+    }
+}
+
+/// Record screenshots through a real animation (both styles) into %TEMP%, for looking at
+/// with your own eyes, and print the frame rate the app logged.
+#[test]
+#[ignore = "drives the live desktop; diagnostic: writes animation frames to %TEMP%"]
+fn record_animation_frames() {
+    for style in ["zoom", "morph"] {
+        let log_name = format!("fz-maximize-e2e-record-{style}.log");
+        let config = format!("animation_style = \"{style}\"\n");
+        let Some((guard, h, zones, log)) = setup_with(&log_name, Some(&config)) else {
+            return;
+        };
+        let mut original = POINT::default();
+        unsafe { GetCursorPos(&mut original).unwrap() };
+        let mouse = MouseGuard(original);
+        let z = zones[1];
+        // Wider than the zone, sticking out of both sides (the case from real use).
+        unsafe {
+            SetWindowPos(
+                h,
+                None,
+                z.l - 100,
+                z.t + 300,
+                (z.r - z.l) + 200,
+                (z.b - z.t) / 2,
+                SWP_NOZORDER,
+            )
+            .unwrap()
+        };
+        std::thread::sleep(Duration::from_millis(400));
+        force_foreground(h);
+        std::thread::sleep(Duration::from_millis(500));
+        let region = {
+            let w = window_rect(h);
+            R {
+                l: w.l.min(z.l) - 20,
+                t: z.t,
+                r: w.r.max(z.r) + 20,
+                b: z.b,
+            }
+        };
+        let dir = std::env::temp_dir().join(format!("fz-maximize-frames-{style}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (max_btn, _) = title_bar_buttons(h);
+        let start = Instant::now();
+        click(h, max_btn.x, max_btn.y);
+        let mut n = 0;
+        while start.elapsed() < Duration::from_millis(650) {
+            let ms = start.elapsed().as_millis();
+            capture_bmp(&region, &dir.join(format!("{n:02}-{ms:03}ms.bmp")));
+            n += 1;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        let logged = std::fs::read_to_string(&log).unwrap_or_default();
+        let line = logged
+            .lines()
+            .rfind(|l| l.contains("animation finished"))
+            .unwrap_or("(no animation logged)");
+        eprintln!("{style}: {n} captures in {}; app: {line}", dir.display());
+        drop(mouse);
+        drop(guard);
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// (ms since the click, white run on the row, white run on the column).
+type EdgeSample = (f64, Option<(usize, usize)>, Option<(usize, usize)>);
+
+/// One screen column `[y0, y1)` at `x`, as 0x00RRGGBB pixels.
+fn capture_col(x: i32, y0: i32, y1: i32) -> Vec<u32> {
+    use windows::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleBitmap, CreateCompatibleDC,
+        DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, HGDIOBJ, ROP_CODE, ReleaseDC, SRCCOPY, SelectObject,
+    };
+    let h = y1 - y0;
+    let mut px = vec![0u32; h as usize];
+    unsafe {
+        let screen = GetDC(None);
+        let mem = CreateCompatibleDC(Some(screen));
+        let bmp = CreateCompatibleBitmap(screen, 1, h);
+        let old = SelectObject(mem, HGDIOBJ(bmp.0));
+        let _ = BitBlt(mem, 0, 0, 1, h, Some(screen), x, y0, ROP_CODE(SRCCOPY.0 | CAPTUREBLT.0));
+        let mut bi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: 1,
+                biHeight: -h,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        GetDIBits(
+            mem,
+            bmp,
+            0,
+            h as u32,
+            Some(px.as_mut_ptr().cast()),
+            &mut bi,
+            DIB_RGB_COLORS,
+        );
+        SelectObject(mem, old);
+        let _ = DeleteObject(HGDIOBJ(bmp.0));
+        let _ = DeleteDC(mem);
+        ReleaseDC(None, screen);
+    }
+    px.iter_mut().for_each(|p| *p &= 0x00FF_FFFF);
+    px
+}
+
+/// Track the window's white client area edges (left, right on one row; top, bottom on
+/// one column) through a real animation, sampled every couple of milliseconds, to see
+/// whether both directions move together and how evenly.
+#[test]
+#[ignore = "drives the live desktop; diagnostic: prints the animated edges over time"]
+fn trace_animation_edges() {
+    for style in ["zoom", "morph"] {
+        let log_name = format!("fz-maximize-e2e-edges-{style}.log");
+        let config = format!("animation_style = \"{style}\"\n");
+        let Some((guard, h, zones, log)) = setup_with(&log_name, Some(&config)) else {
+            return;
+        };
+        let mut original = POINT::default();
+        unsafe { GetCursorPos(&mut original).unwrap() };
+        let mouse = MouseGuard(original);
+        let z = zones[1];
+        unsafe {
+            SetWindowPos(
+                h,
+                None,
+                z.l - 100,
+                z.t + 300,
+                (z.r - z.l) + 200,
+                (z.b - z.t) / 2,
+                SWP_NOZORDER,
+            )
+            .unwrap()
+        };
+        std::thread::sleep(Duration::from_millis(400));
+        force_foreground(h);
+        std::thread::sleep(Duration::from_millis(500));
+        let w = window_rect(h);
+        let (cx, cy) = ((z.l + z.r) / 2, (w.t + w.b) / 2);
+        let (x0, x1, y0, y1) = (w.l.min(z.l) - 50, w.r.max(z.r) + 50, z.t, z.b);
+        let (max_btn, _) = title_bar_buttons(h);
+        let mut samples: Vec<EdgeSample> = Vec::new();
+        let start = Instant::now();
+        click(h, max_btn.x, max_btn.y);
+        while start.elapsed() < Duration::from_millis(700) {
+            let row = white_run(&capture_row(x0, x1, cy), (cx - x0) as usize);
+            let col = white_run(&capture_col(cx, y0, y1), (cy - y0) as usize);
+            samples.push((start.elapsed().as_secs_f64() * 1000.0, row, col));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        let logged = std::fs::read_to_string(&log).unwrap_or_default();
+        let line = logged
+            .lines()
+            .rfind(|l| l.contains("animation finished"))
+            .unwrap_or("(none)");
+        eprintln!(
+            "== {style}: {} samples; app: {}",
+            samples.len(),
+            line.split("DEBUG").nth(1).unwrap_or(line)
+        );
+        eprintln!("   ms    left  right | top  bottom   (screen px; '-' = not white there)");
+        let fmt = |v: Option<(usize, usize)>, o: i32| {
+            v.map_or("    -      -".to_string(), |(a, b)| {
+                format!("{:5}  {:5}", a as i32 + o, b as i32 + o)
+            })
+        };
+        let mut last = None;
+        for (ms, row, col) in &samples {
+            if last != Some((*row, *col)) {
+                eprintln!("{ms:6.1}  {} | {}", fmt(*row, x0), fmt(*col, y0));
+                last = Some((*row, *col));
+            }
+        }
+        drop(mouse);
+        drop(guard);
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// How long a screen capture of a window-sized area takes, with and without CAPTUREBLT.
+#[test]
+#[ignore = "diagnostic: benchmarks screen capture"]
+fn bench_screen_capture() {
+    use windows::Win32::Graphics::Gdi::{
+        BitBlt, CAPTUREBLT, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, HGDIOBJ,
+        ROP_CODE, ReleaseDC, SRCCOPY, SelectObject,
+    };
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+    for (w, h) in [(2220, 2300), (1934, 1150), (600, 600)] {
+        for (name, rop) in [
+            ("SRCCOPY", SRCCOPY),
+            ("SRCCOPY|CAPTUREBLT", ROP_CODE(SRCCOPY.0 | CAPTUREBLT.0)),
+        ] {
+            let mut times = Vec::new();
+            for _ in 0..5 {
+                unsafe {
+                    let screen = GetDC(None);
+                    let mem = CreateCompatibleDC(Some(screen));
+                    let bmp = CreateCompatibleBitmap(screen, w, h);
+                    let old = SelectObject(mem, HGDIOBJ(bmp.0));
+                    let t = Instant::now();
+                    let _ = BitBlt(mem, 0, 0, w, h, Some(screen), 100, 0, rop);
+                    times.push(t.elapsed().as_secs_f64() * 1000.0);
+                    SelectObject(mem, old);
+                    let _ = DeleteObject(HGDIOBJ(bmp.0));
+                    let _ = DeleteDC(mem);
+                    ReleaseDC(None, screen);
+                }
+                std::thread::sleep(Duration::from_millis(30));
+            }
+            eprintln!(
+                "{w}x{h} {name}: {:?} ms",
+                times.iter().map(|t| t.round() as i64).collect::<Vec<_>>()
+            );
+        }
     }
 }

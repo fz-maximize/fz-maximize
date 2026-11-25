@@ -36,7 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
-use crate::config::{self, AlreadyInZone, BypassModifier, Config, Hotkey, MismatchAction};
+use crate::config::{self, AlreadyInZone, AnimationStyle, BypassModifier, Config, Hotkey, MismatchAction};
 
 pub const SETTINGS_CLASS: PCWSTR = w!("fz-maximize.settings");
 
@@ -94,6 +94,11 @@ const MISMATCH: [(&str, MismatchAction); 2] = [
     ("Warn me", MismatchAction::Warn),
     ("Warn, and use normal maximize on that monitor", MismatchAction::Native),
 ];
+const STYLES: [(&str, AnimationStyle); 3] = [
+    ("Match this Windows", AnimationStyle::Auto),
+    ("Zoom into place (Windows 10)", AnimationStyle::Zoom),
+    ("Move into the zone (Windows 11)", AnimationStyle::Morph),
+];
 const LOG_LEVELS: [&str; 5] = ["error", "warn", "info", "debug", "trace"];
 
 // Control ids. OK/Cancel use IDOK/IDCANCEL so Enter/Esc work via IsDialogMessage.
@@ -112,6 +117,7 @@ const ID_WINUP_BYPASS: i32 = 122;
 const ID_ANIMATE: i32 = 123;
 const ID_ANIM_MS: i32 = 124;
 const ID_ANIM_MATCH: i32 = 125;
+const ID_ANIM_STYLE: i32 = 126;
 const ID_ASPECT: i32 = 130;
 const ID_MONITORS: i32 = 131;
 const ID_APPS: i32 = 132;
@@ -299,6 +305,7 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
         ID_ANIMATE,
         "Animate the window into its zone (like Windows' own maximize)",
     );
+    b.labeled("Animation style:", ID_ANIM_STYLE, Ctl::Combo, 260);
     b.check(ID_ANIM_MATCH, "Match Windows' animation speed");
     b.labeled("Otherwise, length (milliseconds, 50-1000):", ID_ANIM_MS, Ctl::Edit, 70);
     b.hint("Caught early, windows go straight to their zone without the maximize animation.");
@@ -472,6 +479,7 @@ fn update_animation_controls(hwnd: HWND) {
     let animate = checked(hwnd, ID_ANIMATE);
     let custom = animate && !checked(hwnd, ID_ANIM_MATCH);
     unsafe {
+        let _ = EnableWindow(item(hwnd, ID_ANIM_STYLE), animate);
         let _ = EnableWindow(item(hwnd, ID_ANIM_MATCH), animate);
         let _ = EnableWindow(item(hwnd, ID_ANIM_MS), custom);
     }
@@ -581,6 +589,12 @@ fn fill(hwnd: HWND, ctx: &Context) {
     let c = &ctx.config;
     fill_combo(
         hwnd,
+        ID_ANIM_STYLE,
+        &STYLES.map(|s| s.0),
+        index_of(&STYLES, c.animation_style),
+    );
+    fill_combo(
+        hwnd,
         ID_MODIFIER,
         &MODIFIERS.map(|m| m.0),
         index_of(&MODIFIERS, c.bypass_modifier),
@@ -660,6 +674,7 @@ fn read(hwnd: HWND) -> Result<(Config, bool), String> {
         preempt_win_up: checked(hwnd, ID_PRE_WINUP),
         win_up_bypass: checked(hwnd, ID_WINUP_BYPASS),
         animate_maximize: checked(hwnd, ID_ANIMATE),
+        animation_style: STYLES[combo_index(hwnd, ID_ANIM_STYLE).min(STYLES.len() - 1)].1,
         animation_match_windows: match_windows,
         animation_ms,
         hotkey: hotkey_from_control(word, checked(hwnd, ID_HOTKEY_WIN))?,
@@ -995,6 +1010,9 @@ mod tests {
         }
         for a in [AlreadyInZone::Restore, AlreadyInZone::Maximize] {
             assert_eq!(ALREADY[index_of(&ALREADY, a)].1, a);
+        }
+        for s in [AnimationStyle::Auto, AnimationStyle::Zoom, AnimationStyle::Morph] {
+            assert_eq!(STYLES[index_of(&STYLES, s)].1, s);
         }
         for a in [MismatchAction::Warn, MismatchAction::Native] {
             assert_eq!(MISMATCH[index_of(&MISMATCH, a)].1, a);

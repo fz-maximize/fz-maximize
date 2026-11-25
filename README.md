@@ -89,9 +89,10 @@ after Windows maximizes, so the maximize animation briefly shows for those.
 Interception can be turned off with `preempt_mouse_maximize` / `preempt_win_up`.
 
 Those intercepted moves are **animated** into the zone (`animate_maximize`,
-`animation_ms`), so they feel like Windows' own maximize. The window's content is never
-scaled (no stretched text): it's shown at its real size, pinned to the corners of the
-growing rectangle, like a live resize. Skipped when Windows' animation effects are off.
+`animation_ms`), so they feel like Windows' own maximize. The animation is drawn the way Windows'
+compositor draws its own (GPU-scaled live previews, at the display's refresh rate), in
+the style of the running Windows: Windows 10's zoom-and-fade, or Windows 11's morph
+(`animation_style`). Skipped when Windows' animation effects are off.
 
 ## Settings
 
@@ -112,6 +113,7 @@ preempt_mouse_maximize = true      # catch max button / title-bar double-click b
 preempt_win_up = true              # same for Win+Up
 win_up_bypass = true               # Win + bypass key + Up = full maximize (replaces Win+Shift+Up stretch)
 animate_maximize = true            # animate intercepted maximizes into the zone
+animation_style = "auto"           # "zoom" (Windows 10 look), "morph" (Windows 11 look); auto = this Windows
 animation_ms = 200                 # animation length (50-1000)
 hotkey = "Ctrl+Alt+Up"             # "" disables
 min_aspect_ratio = 0.0             # e.g. 2.0 = only ultrawide monitors

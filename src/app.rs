@@ -273,7 +273,7 @@ impl App {
             && let Some(from) = window::window_rect(hwnd)
         {
             // Don't animate into a zone the window can't be moved to (elevated apps).
-            if animate::waypoint(&from, &target).is_some() && window::can_place(hwnd) {
+            if animate::should_animate(&from, &target) && window::can_place(hwnd) {
                 if self.animator.is_none() {
                     self.animator = Animator::start();
                 }
@@ -283,6 +283,7 @@ impl App {
                         target: hwnd_key(hwnd),
                         from,
                         to: target,
+                        style: self.config.animation_style.resolve(),
                         duration: self.config.animation_duration(),
                         all_monitors_same_dpi: same_dpi,
                     });

@@ -39,6 +39,29 @@ pub enum BypassModifier {
     None,
 }
 
+/// How the maximize animation looks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnimationStyle {
+    /// The style of the running Windows (Zoom on Windows 10, Morph on Windows 11).
+    #[default]
+    Auto,
+    /// Windows 10: the window zooms slightly into place at its new position, fading in.
+    Zoom,
+    /// Windows 11: the window's rectangle moves to the new one, crossfading.
+    Morph,
+}
+
+impl AnimationStyle {
+    pub fn resolve(self) -> crate::animate::Style {
+        match self {
+            AnimationStyle::Auto => crate::animate::Style::of_this_windows(),
+            AnimationStyle::Zoom => crate::animate::Style::Zoom,
+            AnimationStyle::Morph => crate::animate::Style::Morph,
+        }
+    }
+}
+
 /// Length of Windows' own maximize animation, used when `animation_match_windows` is on.
 /// Windows has no setting or API for it (only on/off switches), so this is measured:
 /// 217-219 ms on Windows 10 22H2 (`measure_windows_maximize_animation` in tests/e2e.rs).
@@ -59,6 +82,8 @@ pub struct Config {
     /// Animate intercepted maximizes into the zone. Skipped automatically when Windows
     /// wouldn't animate a maximize itself (either of its animation switches is off).
     pub animate_maximize: bool,
+    /// Zoom (Windows 10) or morph (Windows 11); `auto` matches the running Windows.
+    pub animation_style: AnimationStyle,
     /// Use the length of Windows' own maximize animation ([`WINDOWS_ANIMATION_MS`]).
     pub animation_match_windows: bool,
     /// Animation length in milliseconds (50-1000) when not matching Windows.
@@ -102,6 +127,7 @@ impl Default for Config {
             preempt_mouse_maximize: true,
             preempt_win_up: true,
             animate_maximize: true,
+            animation_style: AnimationStyle::Auto,
             animation_match_windows: true,
             animation_ms: 200,
             win_up_bypass: true,
@@ -148,6 +174,9 @@ preempt_win_up = true
 # Accessibility > Visual effects) or "Animate windows when minimizing and maximizing"
 # (System Properties > Performance Options) is off.
 animate_maximize = true
+# How it looks: "auto" (matches this Windows), "zoom" (Windows 10: zooms slightly into
+# place, fading in) or "morph" (Windows 11: moves to the zone, crossfading).
+animation_style = "auto"
 # Take as long as Windows' own maximize animation; false = use animation_ms instead.
 animation_match_windows = true
 animation_ms = 200
@@ -467,6 +496,7 @@ mod tests {
             preempt_mouse_maximize: false,
             preempt_win_up: false,
             animate_maximize: false,
+            animation_style: AnimationStyle::Morph,
             animation_match_windows: false,
             animation_ms: 333,
             win_up_bypass: false,

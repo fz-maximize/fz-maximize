@@ -72,9 +72,11 @@ jobs:
       - name: Checksums
         shell: pwsh
         run: |
-          Get-ChildItem dist -File | Where-Object { $_.Extension -in '.exe', '.zip' } | ForEach-Object {
+          $lines = Get-ChildItem dist -File | Where-Object { $_.Extension -in '.exe', '.zip' } | ForEach-Object {
             "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower())  $($_.Name)"
-          } | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+          }
+          # LF line endings so `sha256sum -c SHA256SUMS.txt` works on Linux/macOS/Git Bash.
+          [IO.File]::WriteAllText("$PWD/dist/SHA256SUMS.txt", (($lines -join "`n") + "`n"))
           Get-Content dist/SHA256SUMS.txt
 
       - name: Attest build provenance

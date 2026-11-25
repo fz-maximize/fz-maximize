@@ -2,7 +2,7 @@
 
 ## What a release contains
 
-`task package:all` builds everything into `dist\`:
+`task package` builds everything a release ships (both architectures) into `dist\`:
 
 | File | What it is |
 |---|---|
@@ -11,10 +11,13 @@
 | `fz-maximize-<ver>-x64-portable.zip` | The bare exe + docs, for people who don't want an installer. |
 | `fz-maximize-<ver>-arm64-setup.exe` (+ `.sha256`), `-arm64-portable.zip` | The same for Windows on ARM: a native ARM64 build, not x64 under emulation. |
 
-`task package` builds just the x64 files, and `task package:arm64` just the ARM64 ones.
-ARM64 needs the Visual Studio "MSVC ARM64 build tools" component; the Release workflow's
-runner has it. Without it you can still type-check the ARM64 build with `task lint:arm64`
-(CI does that on every PR).
+`task package:x64` or `task package:arm64` builds just one architecture. The individual
+steps take an `ARCH` parameter, e.g. `task package:installer ARCH=arm64`.
+
+ARM64 needs Visual Studio's "MSVC ARM64 build tools" component: `task setup:arm64:tools`
+adds it (once, asks for admin rights). Without it, `task package` stops after x64 with that
+hint; `task lint:arm64` still type-checks the ARM64 build (CI does that on every PR). The
+Release workflow's runner has the tools.
 
 The version comes from `version` in `Cargo.toml`.
 
@@ -23,6 +26,8 @@ The version comes from `version` in `Cargo.toml`.
 * Rust: installed automatically by rustup from `rust-toolchain.toml`.
 * Visual Studio Build Tools ("Desktop development with C++"): MSVC linker + Windows SDK.
 * Inno Setup 6: `task setup:installer` (per-user install via winget).
+* For ARM64: `task setup:arm64:tools` (the Visual Studio "MSVC ARM64 build tools").
+
 
 None of these are needed on users' machines. The exe uses a **hybrid CRT**
 (`.cargo/config.toml`), the same approach PowerToys uses: the Visual C++ runtime is linked in
@@ -106,7 +111,7 @@ task package
    can't be moved or deleted. A published version is final, so a fix means a new version.
    The **Release** workflow (`.github/workflows/release.yml`) then:
    * checks that the tag matches `Cargo.toml`;
-   * runs `task check` and `task package:all` (x64 + ARM64) on a clean Windows runner;
+   * runs `task check` and `task package` (x64 + ARM64) on a clean Windows runner;
    * runs the ARM64 exe on a real Windows on ARM runner (native ARM64 binary, right version);
    * (once SignPath is set up) signs the exe and installer;
    * writes `SHA256SUMS.txt` and a build-provenance attestation;

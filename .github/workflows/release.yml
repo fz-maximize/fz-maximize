@@ -68,7 +68,7 @@ jobs:
         run: task check
 
       - name: Build installers and portable zips (x64 + ARM64)
-        run: task package:all
+        run: task package
 
       # --- Code signing goes here (SignPath Foundation, once the project is approved). ---
 

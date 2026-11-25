@@ -157,7 +157,7 @@ panels included. To keep normal maximize on a screen, do one of these:
 | `task logs` (`task logs -- -Wait`) | tail the log |
 | `task settings` | open the settings window of the running instance |
 | `task config` | open (and create) the config file |
-| `task package` | build the installer (+ `.sha256`) and portable zip into `dist/` |
+| `task package` | build the installers (+ `.sha256`) and portable zips into `dist/`, x64 and ARM64 (`package:x64` / `package:arm64` for one) |
 | `task setup:installer` | install Inno Setup (per-user, via winget) |
 
 ## Command line

@@ -30,9 +30,14 @@ tasks:
       - cargo fetch
 
   setup:arm64:
-    desc: Add the ARM64 Windows target (needs the VS "ARM64 build tools" component)
+    desc: Add the ARM64 Windows target to Rust (building also needs `task setup:arm64:tools`)
     cmds:
       - rustup target add {{.ARM64_TARGET}}
+
+  setup:arm64:tools:
+    desc: Add Visual Studio's "MSVC ARM64 build tools" component, needed to build for ARM64 (asks for admin)
+    cmds:
+      - powershell -NoProfile -ExecutionPolicy Bypass -File scripts/arm64-tools.ps1 -Install
 
   fmt:
     desc: Format the code
@@ -79,7 +84,8 @@ tasks:
       - cargo build
 
   build:release:
-    desc: Optimized release build (no console window)
+    desc: Optimized release build for x64 (no console window)
+    aliases: [build:x64]
     sources:
       - src/**/*.rs
       - Cargo.toml
@@ -96,6 +102,11 @@ tasks:
   build:arm64:
     desc: Release build for Windows on ARM
     deps: [setup:arm64]
+    preconditions:
+      - sh: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/arm64-tools.ps1
+        msg: >-
+          Building for ARM64 needs Visual Studio's "MSVC ARM64 build tools" component.
+          Install it with `task setup:arm64:tools`, or build just x64 with `task package:x64`.
     cmds:
       - cargo build --release --target {{.ARM64_TARGET}}
 
@@ -211,50 +222,61 @@ tasks:
     cmds:
       - winget install -e --id JRSoftware.InnoSetup --scope user --accept-package-agreements --accept-source-agreements
 
+  # Packaging. `task package` builds every architecture a release ships;
+  # `task package:x64` / `task package:arm64` build one. The steps below take ARCH
+  # (x64 by default), e.g. `task package:installer ARCH=arm64`.
+
   package:
-    desc: Build the x64 installer and portable zip into dist/
+    desc: Build the release for all architectures (x64 + ARM64) into dist/ — what the Release workflow runs
     cmds:
-      - task: package:installer
-      - task: package:zip
-
-  package:arm64:
-    desc: Build the ARM64 installer and portable zip into dist/ (needs the VS "ARM64 build tools")
-    cmds:
-      - task: package:installer:arm64
-      - task: package:zip:arm64
-
-  package:all:
-    desc: Build everything a release ships (x64 and ARM64) into dist/ — what the Release workflow runs
-    cmds:
-      - task: package
+      - task: package:x64
       - task: package:arm64
 
+  package:x64:
+    desc: Build only the x64 installer and portable zip into dist/
+    cmds:
+      - task: package:installer
+        vars: { ARCH: x64 }
+      - task: package:zip
+        vars: { ARCH: x64 }
+
+  package:arm64:
+    desc: Build only the ARM64 installer and portable zip into dist/ (needs `task setup:arm64:tools` once)
+    cmds:
+      - task: package:installer
+        vars: { ARCH: arm64 }
+      - task: package:zip
+        vars: { ARCH: arm64 }
+
   package:installer:
-    desc: Build dist/fz-maximize-<version>-x64-setup.exe (+ .sha256); signed if FZM_SIGN_COMMAND is set
-    deps: [build:release]
+    desc: 'Build dist/fz-maximize-<version>-<ARCH>-setup.exe (+ .sha256), ARCH=x64 (default) or arm64; signed if FZM_SIGN_COMMAND is set'
+    label: 'package:installer:{{.ARCH}}'
+    vars:
+      ARCH: '{{.ARCH | default "x64"}}'
+      EXE_DIR: '{{if eq .ARCH "arm64"}}target/{{.ARM64_TARGET}}/release{{else}}target/release{{end}}'
+    deps:
+      - task: 'build:{{.ARCH}}'
     sources:
-      - '{{.RELEASE_EXE}}'
+      - '{{.EXE_DIR}}/{{.BIN}}.exe'
       - installer/fz-maximize.iss
       - scripts/build-installer.ps1
       - README.md
       - LICENSE
       - THIRD_PARTY_NOTICES.md
     generates:
-      - 'dist/{{.BIN}}-{{.VERSION}}-x64-setup.exe'
+      - 'dist/{{.BIN}}-{{.VERSION}}-{{.ARCH}}-setup.exe'
     cmds:
-      - powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-installer.ps1 -Version {{.VERSION}} -Arch x64 -ExePath {{.RELEASE_EXE}}
-
-  package:installer:arm64:
-    desc: Build the ARM64 installer
-    deps: [build:arm64]
-    cmds:
-      - powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-installer.ps1 -Version {{.VERSION}} -Arch arm64 -ExePath target/{{.ARM64_TARGET}}/release/{{.BIN}}.exe
+      - powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-installer.ps1 -Version {{.VERSION}} -Arch {{.ARCH}} -ExePath {{.EXE_DIR}}/{{.BIN}}.exe
 
   package:zip:
-    desc: Zip the portable release exe + docs into dist/
-    deps: [build:release]
+    desc: Zip the portable exe + docs into dist/, ARCH=x64 (default) or arm64
+    label: 'package:zip:{{.ARCH}}'
     vars:
-      ZIP: dist/{{.BIN}}-{{.VERSION}}-x64-portable.zip
+      ARCH: '{{.ARCH | default "x64"}}'
+      EXE_DIR: '{{if eq .ARCH "arm64"}}target/{{.ARM64_TARGET}}/release{{else}}target/release{{end}}'
+      ZIP: 'dist/{{.BIN}}-{{.VERSION}}-{{.ARCH}}-portable.zip'
+    deps:
+      - task: 'build:{{.ARCH}}'
     cmds:
       # Windows' own bsdtar (System32) writes zip files; Git's GNU tar can't. Avoids
       # Compress-Archive, which breaks when Windows PowerShell inherits PS7's module path.
@@ -262,26 +284,14 @@ tasks:
       # $SYSTEMROOT (a shell variable) rather than a .SYSTEMROOT template variable:
       # template lookup is case-sensitive and the name's case depends on the parent shell
       # (Git Bash: SYSTEMROOT, PowerShell/cmd: SystemRoot); the shell variable works for both.
-      - '"$SYSTEMROOT\System32\tar.exe" -a -cf "{{.ZIP}}" -C target/release {{.BIN}}.exe -C ../.. README.md LICENSE THIRD_PARTY_NOTICES.md docs'
-      - cmd: echo "Created {{.ZIP}}"
-        silent: true
-
-  package:zip:arm64:
-    desc: Zip the portable ARM64 exe + docs into dist/
-    deps: [build:arm64]
-    vars:
-      ZIP: dist/{{.BIN}}-{{.VERSION}}-arm64-portable.zip
-    cmds:
-      - cmd /c "if not exist dist mkdir dist"
-      - '"$SYSTEMROOT\System32\tar.exe" -a -cf "{{.ZIP}}" -C target/{{.ARM64_TARGET}}/release {{.BIN}}.exe -C ../../.. README.md LICENSE THIRD_PARTY_NOTICES.md docs'
+      - '"$SYSTEMROOT\System32\tar.exe" -a -cf "{{.ZIP}}" -C "{{.EXE_DIR}}" {{.BIN}}.exe -C "{{.ROOT_DIR}}" README.md LICENSE THIRD_PARTY_NOTICES.md docs'
       - cmd: echo "Created {{.ZIP}}"
         silent: true
 
   ci:
-    desc: Full CI pipeline — checks, release build and installer
+    desc: Full CI pipeline — checks, then the release packages for all architectures
     cmds:
       - task: check
-      - task: build:release
       - task: package
 
   clean:

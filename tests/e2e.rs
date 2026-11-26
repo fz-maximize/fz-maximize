@@ -1940,3 +1940,80 @@ fn locked_zone_maximized_window_resists_resize_and_drag_restores() {
         "unlocked window should resize"
     );
 }
+
+/// Frame-to-frame intervals of the desktop compositor for `dur` (each `DwmFlush` returns
+/// after the next composition). While something animates, every refresh composes a
+/// frame, so an interval well over one refresh is a stutter.
+fn composition_intervals(dur: Duration) -> Vec<Duration> {
+    use windows::Win32::Graphics::Dwm::DwmFlush;
+    let start = Instant::now();
+    let mut last = start;
+    let mut out = Vec::new();
+    while start.elapsed() < dur {
+        unsafe {
+            let _ = DwmFlush();
+        }
+        let now = Instant::now();
+        out.push(now - last);
+        last = now;
+    }
+    out
+}
+
+/// Opens the Start menu with a Win tap a few times and reports compositor stutter
+/// during its opening animation: once with the animation on (so Win key-down copies the
+/// active window's picture ahead of a possible Win+Up) and once with it off (no copy).
+/// Then times Win+Up pressed the way a person does (Win first, Up ~150 ms later).
+#[test]
+#[ignore = "diagnostic: opens the Start menu repeatedly; run alone"]
+fn win_key_prepare_vs_start_menu() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
+    let refresh = {
+        // The display's refresh interval: the median of idle-ish compositions.
+        let mut v = composition_intervals(Duration::from_millis(300));
+        v.sort();
+        v[v.len() / 2]
+    };
+    for (label, config) in [("copy on Win down", None), ("no copy (animation off)", Some("animate_maximize = false\n"))] {
+        let Some((_guard, h, zones, log)) = setup_with("fz-maximize-e2e-winkey.log", config) else {
+            return;
+        };
+        place_inside(h, &zones[1]);
+        let (mut stutters, mut worst, mut frames) = (0usize, Duration::ZERO, 0usize);
+        for _ in 0..8 {
+            force_foreground(h);
+            std::thread::sleep(Duration::from_millis(400));
+            let tap = Keys::down(&[VK_LWIN]);
+            std::thread::sleep(Duration::from_millis(80));
+            drop(tap); // Start opens on release (Keys' drop waits 100 ms)
+            let iv = composition_intervals(Duration::from_millis(500));
+            frames += iv.len();
+            stutters += iv.iter().filter(|d| d.as_secs_f64() > refresh.as_secs_f64() * 1.5).count();
+            worst = worst.max(iv.iter().copied().max().unwrap_or_default());
+            chord(&[VK_ESCAPE]);
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        eprintln!(
+            "{label}: refresh {:.1} ms; Start opened 8x: {frames} frames, {stutters} over 1.5 refreshes, worst {:.1} ms",
+            refresh.as_secs_f64() * 1000.0,
+            worst.as_secs_f64() * 1000.0
+        );
+        if config.is_none() {
+            // Win+Up as typed: Win, a pause, Up.
+            for _ in 0..3 {
+                place_inside(h, &zones[1]);
+                force_foreground(h);
+                std::thread::sleep(Duration::from_millis(600));
+                let win = Keys::down(&[VK_LWIN]);
+                std::thread::sleep(Duration::from_millis(150));
+                chord(&[VK_UP]);
+                drop(win);
+                std::thread::sleep(Duration::from_millis(700));
+            }
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            for line in text.lines().filter(|l| l.contains("animation finished") || l.contains("copied ahead")) {
+                eprintln!("  {}", line.split("DEBUG ").nth(1).unwrap_or(line));
+            }
+        }
+    }
+}

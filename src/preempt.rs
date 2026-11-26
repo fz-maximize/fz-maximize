@@ -322,6 +322,12 @@ impl Recognizer {
             .then_some(prev.root)
     }
 
+    /// Whether this key event is a Windows key going down while neither was held (not
+    /// auto-repeat): Win+Up may follow. Ask before [`key`](Self::key) records it.
+    pub fn win_goes_down(&self, vk: u16, down: bool) -> bool {
+        down && matches!(VIRTUAL_KEY(vk), VK_LWIN | VK_RWIN) && !(self.lwin || self.rwin)
+    }
+
     /// A key event. `intercept` returns the foreground window to place when Win+Up may
     /// be intercepted now (enabled, eligible window, no Shift/Ctrl/Alt), else `None`.
     pub fn key(&mut self, vk: u16, down: bool, intercept: impl FnOnce() -> Option<(Hwnd, Kind)>) -> Verdict {
@@ -652,10 +658,21 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
             // SAFETY: for WH_KEYBOARD_LL, lParam points to a KBDLLHOOKSTRUCT.
             let info = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
             let vk = info.vkCode as u16;
+            let mut prepare: Option<Hwnd> = None;
             let verdict = RECOGNIZER.with(|r| {
                 let Ok(mut r) = r.try_borrow_mut() else {
                     return Verdict::Pass;
                 };
+                if r.win_goes_down(vk, down) && !PAUSED.load(Ordering::Relaxed) {
+                    // Win+Up may follow: get the active window's picture ready.
+                    let fg = unsafe { GetForegroundWindow() };
+                    if !fg.is_invalid() {
+                        let root = unsafe { GetAncestor(fg, GA_ROOT) };
+                        if window::is_trackable(root) && !window::is_iconic(root) {
+                            prepare = Some(hwnd_key(root));
+                        }
+                    }
+                }
                 r.key(vk, down, || {
                     if PAUSED.load(Ordering::Relaxed) {
                         return None;
@@ -676,6 +693,9 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
                         .then(|| (hwnd_key(root), kind))
                 })
             });
+            if let Some(h) = prepare {
+                fire(h, Kind::Prepare);
+            }
             match verdict {
                 Verdict::Fire(h, kind) => {
                     fire(h, kind);
@@ -976,6 +996,19 @@ mod tests {
         p.eligible = false;
         assert_eq!(r.press(p, DBL), Verdict::Pass);
         assert_eq!(r.press(press(HT_CAPTION, 50, 1200), DBL), Verdict::Pass);
+    }
+
+    #[test]
+    fn win_press_announces_a_possible_win_up() {
+        let mut r = Recognizer::default();
+        assert!(!r.win_goes_down(VK_UP.0, true), "not a Win key");
+        assert!(r.win_goes_down(VK_LWIN.0, true));
+        r.key(VK_LWIN.0, true, || None);
+        assert!(!r.win_goes_down(VK_LWIN.0, true), "auto-repeat while held");
+        assert!(!r.win_goes_down(VK_RWIN.0, true), "the other Win key while one is held");
+        assert!(!r.win_goes_down(VK_LWIN.0, false), "release");
+        r.key(VK_LWIN.0, false, || None);
+        assert!(r.win_goes_down(VK_RWIN.0, true), "a new press");
     }
 
     #[test]

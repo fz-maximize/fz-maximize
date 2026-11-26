@@ -42,8 +42,10 @@ ship with Windows 10/11, so there's no Visual C++ Redistributable to install.
   `/ALLUSERS` installs machine-wide instead.
 * Start Menu shortcut, an Apps & features entry (with uninstaller) and an optional
   "Start when I sign in" task (the same `HKCU\...\Run` value the app's own toggle uses).
-* Stops a running fz-maximize (`--quit`) before upgrading or uninstalling, and starts it
-  again afterwards, including after silent installs, so `winget upgrade` leaves it running.
+* Stops a running fz-maximize (`--quit`) before installing or uninstalling, wherever it
+  runs from (this install, another folder, the portable zip, a dev build), and starts the
+  new one afterwards, including after silent installs, so `winget upgrade` leaves it
+  running. Interactive setup asks first; silent setup (winget) closes it without asking.
 * Uninstall removes the program, shortcut and autostart value. It keeps the user's
   settings (`%APPDATA%\fz-maximize`) and logs (`%LOCALAPPDATA%\fz-maximize`), as is
   conventional.

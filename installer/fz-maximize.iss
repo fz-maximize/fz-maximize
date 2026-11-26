@@ -54,7 +54,8 @@ SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
-; We stop the running instance ourselves (see [Code]); no Restart Manager prompts.
+; We stop the running instance ourselves, wherever it runs from (see [Code]); the
+; Restart Manager only sees copies inside the install folder.
 CloseApplications=no
 #ifdef Sign
 SignTool=fzmsign
@@ -88,32 +89,66 @@ Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: s
 Filename: "{app}\{#AppExe}"; Description: "Start {#AppName} now"; Flags: nowait postinstall
 
 [Code]
-// Ask a running fz-maximize to exit (it posts WM_CLOSE to its own window) so the exe
-// can be replaced or removed. The running copy may live elsewhere (a dev build), so
-// the installed exe's --quit is tried first, then the one being installed.
-procedure StopRunningInstance(const Exe: String);
+// fz-maximize holds this mutex while it runs (one instance per sign-in session), wherever
+// it was started from: this install, another folder, the portable zip or a dev build.
+const
+  InstanceMutex = 'Local\fz-maximize.single-instance';
+
+function IsRunning(): Boolean;
+begin
+  Result := CheckForMutexes(InstanceMutex);
+end;
+
+// Ask the running copy to exit (`--quit` posts WM_CLOSE to its window) and wait for it
+// to go. `Exe` is any fz-maximize.exe; it finds the running copy by its window class.
+function StopRunningInstance(const Exe: String): Boolean;
 var
-  ResultCode: Integer;
+  ResultCode, Waited: Integer;
 begin
   if FileExists(Exe) then
-  begin
     Exec(Exe, '--quit', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    // Exit code 0 means an instance was found and asked to exit.
-    if ResultCode = 0 then
-      Sleep(1500);
+  Waited := 0;
+  while IsRunning() and (Waited < 10000) do
+  begin
+    Sleep(100);
+    Waited := Waited + 100;
   end;
+  Result := not IsRunning();
+end;
+
+// Use the exe being installed: there may be no installed copy yet (first install while
+// a portable or dev copy runs).
+function StopWithNewExe(): Boolean;
+begin
+  ExtractTemporaryFile('{#AppExe}');
+  Result := StopRunningInstance(ExpandConstant('{tmp}\{#AppExe}'));
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  StopRunningInstance(ExpandConstant('{app}\{#AppExe}'));
   Result := '';
+  if not IsRunning() then
+    exit;
+  // Silent installs (winget, upgrades) close it without asking; it is started again
+  // when Setup finishes.
+  if not WizardSilent() then
+    if MsgBox('fz-maximize is running. Setup will close it now and start the new ' +
+              'version when it finishes.' + #13#10#13#10 +
+              'Click OK to continue, or Cancel to exit Setup.',
+              mbConfirmation, MB_OKCANCEL) <> IDOK then
+    begin
+      Result := 'Setup was cancelled because fz-maximize is running.';
+      exit;
+    end;
+  if not StopWithNewExe() then
+    Result := 'fz-maximize could not be closed. Exit it from its tray icon, then run Setup again.';
 end;
 
 function InitializeUninstall(): Boolean;
 begin
-  StopRunningInstance(ExpandConstant('{app}\{#AppExe}'));
   Result := True;
+  if IsRunning() then
+    StopRunningInstance(ExpandConstant('{app}\{#AppExe}'));
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

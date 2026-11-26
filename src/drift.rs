@@ -147,8 +147,11 @@ pub struct Record {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Counters {
     pub powertoys_version: String,
+    /// The fz-maximize version that made these checks (empty in files from before 0.3.4).
+    pub fz_maximize_version: String,
     pub checks: u64,
     pub matches: u64,
     pub mismatches: u64,
@@ -163,7 +166,7 @@ pub struct Counters {
 #[serde(default)]
 pub struct DriftState {
     pub current: Counters,
-    /// Counters of the previous PowerToys version, kept after an update.
+    /// Counters from before the last PowerToys or fz-maximize update.
     pub previous: Option<Counters>,
     /// Keys (monitor + layout) with confirmed drift for the current version.
     pub confirmed: Vec<String>,
@@ -232,11 +235,35 @@ impl DriftTracker {
         if self.state.current.powertoys_version == version {
             return;
         }
+        let fz = self.state.current.fz_maximize_version.clone();
+        self.start_fresh(version.to_string(), fz);
+    }
+
+    /// Start fresh counters when fz-maximize was updated: a fix (such as 0.3.1's monitor
+    /// identification) shouldn't keep showing the mismatches it fixed. Returns whether
+    /// the counters were reset.
+    pub fn set_fz_maximize_version(&mut self, version: &str) -> bool {
+        let c = &self.state.current;
+        if c.fz_maximize_version == version {
+            return false;
+        }
+        if c.checks == 0 && self.state.confirmed.is_empty() {
+            // Nothing recorded yet: just note the version.
+            self.state.current.fz_maximize_version = version.to_string();
+            return false;
+        }
+        let pt = c.powertoys_version.clone();
+        self.start_fresh(pt, version.to_string());
+        true
+    }
+
+    fn start_fresh(&mut self, powertoys_version: String, fz_maximize_version: String) {
         if self.state.current.checks > 0 {
             self.state.previous = Some(self.state.current.clone());
         }
         self.state.current = Counters {
-            powertoys_version: version.to_string(),
+            powertoys_version,
+            fz_maximize_version,
             ..Default::default()
         };
         self.state.confirmed.clear();
@@ -466,6 +493,49 @@ mod tests {
         t.record("k", (1, vec![1]), rec(3), mismatch());
         t.set_powertoys_version("v0.103");
         assert_eq!(t.state.current.checks, 1);
+    }
+
+    #[test]
+    fn fz_maximize_update_starts_fresh_counters() {
+        let mut t = DriftTracker::new(DriftState::default());
+        // Nothing recorded yet: the version is just noted.
+        assert!(!t.set_fz_maximize_version("0.3.3"));
+        assert_eq!(t.state.current.fz_maximize_version, "0.3.3");
+        t.set_powertoys_version("v0.102");
+        assert_eq!(
+            t.state.current.fz_maximize_version, "0.3.3",
+            "kept across a PowerToys update"
+        );
+        t.record("k", (1, vec![1]), rec(1), mismatch());
+        t.record("k", (2, vec![1]), rec(2), mismatch());
+        assert!(t.is_confirmed("k"));
+        assert!(!t.set_fz_maximize_version("0.3.3"), "same version: kept");
+        assert!(t.set_fz_maximize_version("0.3.4"));
+        let c = &t.state.current;
+        assert_eq!((c.checks, c.mismatches), (0, 0));
+        assert_eq!(
+            (c.powertoys_version.as_str(), c.fz_maximize_version.as_str()),
+            ("v0.102", "0.3.4")
+        );
+        assert!(!t.is_confirmed("k"));
+        assert_eq!(t.state.previous.as_ref().unwrap().mismatches, 2);
+    }
+
+    #[test]
+    fn state_from_before_fz_maximize_versions_were_recorded() {
+        // 0.3.3 and earlier wrote no fz_maximize_version: it loads as empty, and the first
+        // run of a newer version starts fresh.
+        let old = r#"{"current":{"powertoys_version":"v0.102","checks":16,"matches":10,"mismatches":6,
+            "inconclusive":0,"first_check_unix":1,"last_check_unix":2,"last_match_unix":2},
+            "previous":null,"confirmed":[],"recent":[]}"#;
+        let state: DriftState = serde_json::from_str(old).unwrap();
+        assert_eq!(state.current.fz_maximize_version, "");
+        let mut t = DriftTracker::new(state);
+        assert!(t.set_fz_maximize_version("0.3.4"));
+        assert_eq!(
+            t.state.summary(),
+            "FancyZones agreement: not checked yet (Shift-drag a window into a zone)"
+        );
     }
 
     #[test]

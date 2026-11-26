@@ -1098,6 +1098,13 @@ pub fn run(config_path: PathBuf, cfg: Config, config_error: Option<String>) -> R
     APP.with(|cell| *cell.borrow_mut() = Some(app));
 
     with_app(|a| {
+        // A new fz-maximize version starts the FancyZones agreement tally afresh.
+        if a.drift.set_fz_maximize_version(env!("CARGO_PKG_VERSION"))
+            && let Some(path) = &a.drift_path
+            && let Err(e) = a.drift.state.save(path)
+        {
+            tracing::warn!(error = %e, "could not save FancyZones check state");
+        }
         a.tray = Some(Tray::new(hwnd, WM_APP_TRAY));
         a.apply_config(cfg);
         a.refresh_tray();

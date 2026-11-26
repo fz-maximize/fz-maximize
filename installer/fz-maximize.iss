@@ -38,6 +38,12 @@ AppUpdatesURL=https://github.com/fz-maximize/fz-maximize/releases
 AppComments=Maximize windows into their PowerToys FancyZones zone
 VersionInfoVersion={#AppVersion}.0
 VersionInfoDescription={#AppName} setup
+; Same product name and version as fz-maximize.exe (build.rs); code signing checks them.
+VersionInfoProductName={#AppName}
+VersionInfoProductVersion={#AppVersion}.0
+VersionInfoProductTextVersion={#AppVersion}
+VersionInfoCompany={#Publisher}
+VersionInfoCopyright=Copyright (c) 2026 fz-maximize contributors. MIT License.
 DefaultDirName={autopf}\{#AppName}
 DisableDirPage=auto
 DisableProgramGroupPage=yes

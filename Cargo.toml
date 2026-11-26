@@ -1,6 +1,6 @@
 [package]
 name = "fz-maximize"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Make the Windows maximize action fill the PowerToys FancyZones zone a window is in, instead of the whole monitor."

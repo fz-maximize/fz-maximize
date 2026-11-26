@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Help & documentation
+    url: https://fz-maximize.github.io/fz-maximize/troubleshooting/
+    about: Setup, every setting, troubleshooting and FAQ. Many questions are answered here.
   - name: Security vulnerability
     url: https://github.com/fz-maximize/fz-maximize/security/advisories/new
     about: Please report security problems privately.

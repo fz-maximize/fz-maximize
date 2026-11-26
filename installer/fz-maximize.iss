@@ -31,6 +31,10 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#Publisher}
+; Links in Settings > Apps > Installed apps (Support link / Help link / Update information).
+AppPublisherURL=https://fz-maximize.github.io/fz-maximize/
+AppSupportURL=https://fz-maximize.github.io/fz-maximize/troubleshooting/
+AppUpdatesURL=https://github.com/fz-maximize/fz-maximize/releases
 AppComments=Maximize windows into their PowerToys FancyZones zone
 VersionInfoVersion={#AppVersion}.0
 VersionInfoDescription={#AppName} setup

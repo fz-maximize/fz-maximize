@@ -55,7 +55,9 @@ OPTIONS:
     --json           machine-readable --dump output
 
 Holding Shift while maximizing (or pressing Win+Shift+Up) gives the normal full-monitor
-maximize; the key is configurable.";
+maximize; the key is configurable.
+
+Documentation: https://fz-maximize.github.io/fz-maximize/";
 
 #[derive(Debug, PartialEq, Eq)]
 enum Cmd {
@@ -210,7 +212,7 @@ fn main() -> ExitCode {
                 out("opened the settings window of the running fz-maximize");
                 ExitCode::SUCCESS
             } else {
-                eprintln!("fz-maximize is not running; start it first (task start, or task try)");
+                eprintln!("fz-maximize is not running; start it first");
                 ExitCode::from(1)
             }
         }

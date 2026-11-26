@@ -39,6 +39,38 @@ notification: install now, at a time you pick, remind later, or skip that versio
 fz-maximize asks the first time it starts. **Check for updates now** in the tray menu
 works either way. See [Privacy](/fz-maximize/privacy/#update-checks) for what's sent.
 
+## FancyZones integration
+
+#### Do nothing while FancyZones is turned off in PowerToys
+
+<small><code>require_fancyzones_enabled</code> · default on</small>
+
+Off: fz-maximize keeps using the last saved layouts even while FancyZones is off.
+
+#### Use FancyZones' default layout on monitors with no saved layout
+
+<small><code>use_fancyzones_default_layout</code> · default on</small>
+
+FancyZones applies its default layout (a three-zone priority grid) to monitors you
+haven't set up. Off: those monitors keep the normal maximize.
+
+#### Compare with FancyZones' own snaps
+
+<small><code>fancyzones_check</code> · default on</small>
+
+Each time FancyZones snaps a window itself (for example a <kbd>Shift</kbd>-drag),
+fz-maximize checks that it computes the same zone. This catches the rare case where a
+PowerToys update changes how zones are calculated. The result shows in the tray menu
+("FancyZones agreement: 12/12 match").
+
+#### When they disagree
+
+<small><code>on_fancyzones_mismatch</code> · default <code>warn</code></small>
+
+**Warn me** (`"warn"`) shows a notification and logs the difference. **Warn, and use
+normal maximize on that monitor** (`"native"`) also stops redirecting maximize there until
+PowerToys or the layout changes.
+
 ## Behavior
 
 #### Maximizing a window that already fills its zone
@@ -163,38 +195,6 @@ that appears in the window title.
 
 Honors the **Excluded apps** list in FancyZones' settings too.
 
-## FancyZones integration
-
-#### Do nothing while FancyZones is turned off in PowerToys
-
-<small><code>require_fancyzones_enabled</code> · default on</small>
-
-Off: fz-maximize keeps using the last saved layouts even while FancyZones is off.
-
-#### Use FancyZones' default layout on monitors with no saved layout
-
-<small><code>use_fancyzones_default_layout</code> · default on</small>
-
-FancyZones applies its default layout (a three-zone priority grid) to monitors you
-haven't set up. Off: those monitors keep the normal maximize.
-
-#### Compare with FancyZones' own snaps
-
-<small><code>fancyzones_check</code> · default on</small>
-
-Each time FancyZones snaps a window itself (for example a <kbd>Shift</kbd>-drag),
-fz-maximize checks that it computes the same zone. This catches the rare case where a
-PowerToys update changes how zones are calculated. The result shows in the tray menu
-("FancyZones agreement: 12/12 match").
-
-#### When they disagree
-
-<small><code>on_fancyzones_mismatch</code> · default <code>warn</code></small>
-
-**Warn me** (`"warn"`) shows a notification and logs the difference. **Warn, and use
-normal maximize on that monitor** (`"native"`) also stops redirecting maximize there until
-PowerToys or the layout changes.
-
 ## The config file
 
 `%APPDATA%\fz-maximize\config.toml` holds everything above except **Start with Windows**.
@@ -207,6 +207,11 @@ Every key is optional; these are the defaults:
 ```toml
 log_level = "info"
 check_for_updates = false
+
+require_fancyzones_enabled = true
+use_fancyzones_default_layout = true
+fancyzones_check = true
+on_fancyzones_mismatch = "warn"
 
 already_in_zone = "restore"
 snap_on_drag_maximize = true
@@ -225,11 +230,6 @@ min_aspect_ratio = 0.0
 excluded_monitors = []
 excluded_apps = []
 respect_fancyzones_excluded_apps = true
-
-require_fancyzones_enabled = true
-use_fancyzones_default_layout = true
-fancyzones_check = true
-on_fancyzones_mismatch = "warn"
 ```
 
 <Aside>

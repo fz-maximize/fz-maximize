@@ -169,6 +169,22 @@ log_level = "info"
 # turn it on (fz-maximize asks once). Tray -> "Check for updates now" works either way.
 check_for_updates = false
 
+# ---- FancyZones integration ------------------------------------------------------
+
+# Do nothing while FancyZones is disabled in PowerToys.
+require_fancyzones_enabled = true
+
+# Monitors without a saved FancyZones layout use FancyZones' default layout.
+use_fancyzones_default_layout = true
+
+# Each time FancyZones itself snaps a window (Shift-drag), compare where it put the
+# window with where fz-maximize computes that zone. Detects drift after PowerToys updates.
+fancyzones_check = true
+
+# Once a disagreement is confirmed: "warn" (log + notification) or "native"
+# (also stop redirecting maximize on that monitor until PowerToys/the layout changes).
+on_fancyzones_mismatch = "warn"
+
 # ---- Behavior --------------------------------------------------------------------
 
 # Maximizing a window that already fills its zone:
@@ -229,22 +245,6 @@ excluded_apps = []
 
 # Also honor FancyZones' own "Excluded apps" list.
 respect_fancyzones_excluded_apps = true
-
-# ---- FancyZones integration ------------------------------------------------------
-
-# Do nothing while FancyZones is disabled in PowerToys.
-require_fancyzones_enabled = true
-
-# Monitors without a saved FancyZones layout use FancyZones' default layout.
-use_fancyzones_default_layout = true
-
-# Each time FancyZones itself snaps a window (Shift-drag), compare where it put the
-# window with where fz-maximize computes that zone. Detects drift after PowerToys updates.
-fancyzones_check = true
-
-# Once a disagreement is confirmed: "warn" (log + notification) or "native"
-# (also stop redirecting maximize on that monitor until PowerToys/the layout changes).
-on_fancyzones_mismatch = "warn"
 "#;
 
 /// Render `cfg` as a config file: [`TEMPLATE`] (with all its documentation) with each

@@ -266,6 +266,25 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
 
     // ---- left column ----
     b.column(0);
+    b.group("General");
+    b.check(ID_AUTOSTART, "Start with Windows");
+    b.check(ID_UPDATES, "Check for updates once a day");
+    b.labeled("Log detail:", ID_LOGLEVEL, Ctl::Combo, 120);
+    b.end_group();
+
+    b.group("FancyZones integration");
+    b.check(ID_FZ_REQUIRE, "Do nothing while FancyZones is turned off in PowerToys");
+    b.check(
+        ID_FZ_DEFAULT,
+        "Use FancyZones' default layout on monitors with no saved layout",
+    );
+    b.check(
+        ID_CHECK,
+        "Compare with FancyZones' own snaps (spots changes after updates)",
+    );
+    b.labeled("When they disagree:", ID_MISMATCH, Ctl::Combo, 300);
+    b.hint_with_id(ID_HINT_FIRST + 1, &ctx.check_status, 1);
+    b.end_group();
     b.group("Behavior");
     b.labeled(
         "Maximizing a window that already fills its zone:",
@@ -291,6 +310,10 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
     b.nested(false);
     b.end_group();
 
+    let left_bottom = b.y;
+
+    // ---- right column ----
+    b.column(1);
     b.group("Appearance");
     b.label("Prevent the maximize flash for:");
     b.nested(true);
@@ -310,16 +333,6 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
     b.hint("Animates the gestures above. Off while Windows' animation effects are off.");
     b.nested(false);
     b.end_group();
-    let left_bottom = b.y;
-
-    // ---- right column ----
-    b.column(1);
-    b.group("General");
-    b.check(ID_AUTOSTART, "Start with Windows");
-    b.check(ID_UPDATES, "Check for updates once a day");
-    b.labeled("Log detail:", ID_LOGLEVEL, Ctl::Combo, 120);
-    b.end_group();
-
     b.group("Exclusions");
     b.labeled(
         "Only monitors at least this wide (width / height, 0 = all):",
@@ -335,19 +348,6 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
     b.check(ID_FZ_EXCLUDED, "Also leave FancyZones' excluded apps alone");
     b.end_group();
 
-    b.group("FancyZones integration");
-    b.check(ID_FZ_REQUIRE, "Do nothing while FancyZones is turned off in PowerToys");
-    b.check(
-        ID_FZ_DEFAULT,
-        "Use FancyZones' default layout on monitors with no saved layout",
-    );
-    b.check(
-        ID_CHECK,
-        "Compare with FancyZones' own snaps (spots changes after updates)",
-    );
-    b.labeled("When they disagree:", ID_MISMATCH, Ctl::Combo, 300);
-    b.hint_with_id(ID_HINT_FIRST + 1, &ctx.check_status, 1);
-    b.end_group();
     let right_bottom = b.y;
 
     // ---- buttons ----

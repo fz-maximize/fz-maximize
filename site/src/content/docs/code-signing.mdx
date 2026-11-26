@@ -1,0 +1,68 @@
+---
+title: Code signing policy
+description: How fz-maximize releases are built, reviewed, approved and signed.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by
+[SignPath Foundation](https://signpath.org).
+
+<Aside title="Signing status">
+fz-maximize has applied to the SignPath Foundation's free code signing program for open
+source projects. Until signing is in place, releases are unsigned; each one still lists
+its SHA-256 checksums and a build-provenance attestation, described below.
+</Aside>
+
+## What is signed
+
+The files attached to each [GitHub release](https://github.com/fz-maximize/fz-maximize/releases):
+the installers (`fz-maximize-<version>-<arch>-setup.exe`), the uninstaller they install,
+and `fz-maximize.exe`, also in the portable zips. Only binaries built from this project's
+own source are signed. The certificate is issued to SignPath Foundation, so Windows shows
+it as the publisher.
+
+## How releases are built
+
+- All source code, build scripts and CI configuration are in the public repository
+  [fz-maximize/fz-maximize](https://github.com/fz-maximize/fz-maximize), under the
+  [MIT license](https://github.com/fz-maximize/fz-maximize/blob/main/LICENSE).
+- Every change reaches `main` through a pull request that must pass CI (formatting, lint,
+  unit tests); contributions from outside the team are reviewed by a committer first.
+  `main` can't be force-pushed or deleted.
+- A release starts from a version tag on `main`. Tags can only be created by maintainers
+  and can't be moved or deleted. GitHub Actions then builds everything from that tag on a
+  clean runner
+  ([`release.yml`](https://github.com/fz-maximize/fz-maximize/blob/main/.github/workflows/release.yml)):
+  no binary is built or signed on a personal computer.
+- Each release publishes SHA-256 checksums and a build-provenance attestation, so anyone
+  can check that a file came from that workflow:
+  `gh attestation verify <file> --repo fz-maximize/fz-maximize`.
+- Signing happens in the same workflow, through SignPath, which verifies that the files
+  to be signed came from this repository's build. **Every release is approved manually**
+  by an approver before it's signed.
+
+## Team roles
+
+| Role | Who |
+|---|---|
+| Committers and reviewers | [fzmaximize](https://github.com/fzmaximize) |
+| Approvers | [fzmaximize](https://github.com/fzmaximize) |
+
+Committers may change the source; changes from anyone else, such as outside pull
+requests, are reviewed by a committer before they're merged. Approvers decide whether a
+release may be signed. All team members use multi-factor authentication for GitHub (the
+[fz-maximize organization](https://github.com/fz-maximize) requires it) and for SignPath.
+
+## Privacy
+
+This program will not transfer any information to other networked systems unless
+specifically requested by the user or the person installing or operating it. See
+[Privacy](/fz-maximize/privacy/) for what fz-maximize reads and stores, all of it on your
+computer.
+
+## Reporting a problem
+
+If you believe a signed fz-maximize file is malicious, or was signed without following
+this policy, please [report it privately](https://github.com/fz-maximize/fz-maximize/security/advisories/new),
+or contact the [SignPath Foundation](https://signpath.org).

@@ -167,6 +167,8 @@ jobs:
             echo '```'
             echo
             echo "Build provenance: \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`"
+            echo
+            echo "[Code signing policy](https://fz-maximize.github.io/fz-maximize/code-signing/) · [Privacy](https://fz-maximize.github.io/fz-maximize/privacy/)"
           } > notes.md
           prerelease=()
           if [[ "$TAG" == *-* ]]; then prerelease=(--prerelease); fi

@@ -82,4 +82,5 @@ how fz-maximize stays in sync with FancyZones. Releases: [docs/RELEASING.md](doc
 
 fz-maximize is an independent project, not affiliated with or endorsed by Microsoft.
 "PowerToys" and "FancyZones" are Microsoft product names, used only to describe
-compatibility. [Privacy](https://fz-maximize.github.io/fz-maximize/privacy/).
+compatibility. [Code signing policy](https://fz-maximize.github.io/fz-maximize/code-signing/) ·
+[Privacy](https://fz-maximize.github.io/fz-maximize/privacy/).

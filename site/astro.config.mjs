@@ -47,6 +47,7 @@ export default defineConfig({
 					label: 'About',
 					items: [
 						{ label: 'Privacy', slug: 'privacy' },
+						{ label: 'Code signing policy', slug: 'code-signing' },
 						{ label: 'Release notes', link: 'https://github.com/fz-maximize/fz-maximize/releases' },
 						{ label: 'Contributing', link: 'https://github.com/fz-maximize/fz-maximize/blob/main/CONTRIBUTING.md' },
 					],

@@ -1,0 +1,225 @@
+---
+title: Settings
+description: Every fz-maximize setting, in the settings window and in config.toml.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import { Image } from 'astro:assets';
+import settingsShot from '../../assets/settings.png';
+
+Right-click the tray icon and choose **Settings...**. **OK** and **Apply** save and take
+effect immediately; there's nothing to restart.
+
+<a href={settingsShot.src} title="Open full size"><Image src={settingsShot} alt="The fz-maximize settings window, with General, Behavior, Appearance, Exclusions and FancyZones integration sections." class="screenshot" /></a>
+
+The settings live in `%APPDATA%\fz-maximize\config.toml`. You can also edit that file by
+hand ([below](#the-config-file)). Each setting lists its name in the file.
+
+## General
+
+#### Start with Windows
+
+Starts fz-maximize when you sign in. Stored in Windows' startup list, not in the
+config file. Same as the tray menu item.
+
+#### Log detail
+
+<small><code>log_level</code> · default <code>info</code></small>
+
+How much goes into `%LOCALAPPDATA%\fz-maximize\fz-maximize.log`: `error`, `warn`,
+`info`, `debug` or `trace`. `info` logs one line per zone maximize; use `debug` to find
+out why a maximize was left alone.
+
+## Behavior
+
+#### Maximizing a window that already fills its zone
+
+<small><code>already_in_zone</code> · default <code>restore</code></small>
+
+**Restore its previous size** (`"restore"`) toggles back to the size the window had
+before it was maximized into the zone. **Maximize to full screen** (`"maximize"`) gives
+the normal full-monitor maximize instead.
+
+#### Dragging a window to the top edge snaps it into the zone under the cursor
+
+<small><code>snap_on_drag_maximize</code> · default on</small>
+
+Off: dragging to the top edge gives Windows' normal full-screen maximize.
+
+#### Lock zone-maximized windows
+
+<small><code>lock_zone_maximized</code> · default on</small>
+
+Zone-maximized windows don't resize at their edges, and dragging their title bar
+restores them, like truly maximized windows. Hold the full-screen key to resize or move
+one normally.
+
+### Full-screen maximize (instead of the zone)
+
+#### Hold this key
+
+<small><code>bypass_modifier</code> · default <code>shift</code></small>
+
+Hold it while clicking maximize or double-clicking the title bar to get the normal
+full-monitor maximize. It also unlocks a locked window. `shift`, `ctrl`, `alt`, or
+`none` (no way to get a full-screen maximize).
+
+#### Win + Shift + Up
+
+<small><code>win_up_bypass</code> · default on</small>
+
+<kbd>Win</kbd> + the key above + <kbd>Up</kbd> gives the normal full-monitor maximize.
+This replaces Windows' own <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>Up</kbd> (stretch the
+window vertically); turn it off to keep Windows' behavior. Needs **Win+Up** flash
+prevention (below).
+
+## Appearance
+
+### Prevent the maximize flash for
+
+#### Maximize button and title-bar double-click
+
+<small><code>preempt_mouse_maximize</code> · default on</small>
+
+Catches these clicks before Windows maximizes, so the window goes straight into its zone.
+Off: Windows maximizes first and fz-maximize moves the window right after, so it flashes
+full screen briefly.
+
+#### Win+Up
+
+<small><code>preempt_win_up</code> · default on</small>
+
+The same for <kbd>Win</kbd>+<kbd>Up</kbd>.
+
+### Animation
+
+#### Animate the window into its zone
+
+<small><code>animate_maximize</code> · default on</small>
+
+Animates the gestures above (the ones caught before Windows maximizes), like Windows' own
+maximize animation. Skipped whenever Windows wouldn't animate a maximize itself: when
+**Animation effects** (Settings → Accessibility → Visual effects) or **Animate windows
+when minimizing and maximizing** (System Properties → Performance Options) is off.
+
+#### Style
+
+<small><code>animation_style</code> · default <code>auto</code></small>
+
+**Match this Windows** (`"auto"`), **Zoom into place (Windows 10)** (`"zoom"`): the window
+zooms slightly into place while fading in, or **Move into the zone (Windows 11)**
+(`"morph"`): it moves and resizes into the zone, crossfading.
+
+#### Match Windows' animation speed
+
+<small><code>animation_match_windows</code> · default on</small>
+
+Takes as long as Windows' own maximize animation.
+
+#### Otherwise, length
+
+<small><code>animation_ms</code> · default <code>200</code></small>
+
+Animation length in milliseconds (50 to 1000), used when the option above is off.
+
+## Exclusions
+
+#### Only monitors at least this wide
+
+<small><code>min_aspect_ratio</code> · default <code>0</code></small>
+
+Only manage monitors at least this many times as wide as they are tall. `2` limits
+fz-maximize to ultrawide monitors; `0` manages every monitor with a multi-zone layout.
+
+#### Leave these monitors alone
+
+<small><code>excluded_monitors</code> · default none</small>
+
+Monitors that keep the normal maximize, one per line. Use the ID shown under the box
+(like `BOE0A52`), or the display name (`\\.\DISPLAY1`), instance ID or serial number.
+
+#### Leave these apps alone
+
+<small><code>excluded_apps</code> · default none</small>
+
+Apps that keep the normal maximize, one per line: an exe name (`notepad.exe`) or text
+that appears in the window title.
+
+#### Also leave FancyZones' excluded apps alone
+
+<small><code>respect_fancyzones_excluded_apps</code> · default on</small>
+
+Honors the **Excluded apps** list in FancyZones' settings too.
+
+## FancyZones integration
+
+#### Do nothing while FancyZones is turned off in PowerToys
+
+<small><code>require_fancyzones_enabled</code> · default on</small>
+
+Off: fz-maximize keeps using the last saved layouts even while FancyZones is off.
+
+#### Use FancyZones' default layout on monitors with no saved layout
+
+<small><code>use_fancyzones_default_layout</code> · default on</small>
+
+FancyZones applies its default layout (a three-zone priority grid) to monitors you
+haven't set up. Off: those monitors keep the normal maximize.
+
+#### Compare with FancyZones' own snaps
+
+<small><code>fancyzones_check</code> · default on</small>
+
+Each time FancyZones snaps a window itself (for example a <kbd>Shift</kbd>-drag),
+fz-maximize checks that it computes the same zone. This catches the rare case where a
+PowerToys update changes how zones are calculated. The result shows in the tray menu
+("FancyZones agreement: 12/12 match").
+
+#### When they disagree
+
+<small><code>on_fancyzones_mismatch</code> · default <code>warn</code></small>
+
+**Warn me** (`"warn"`) shows a notification and logs the difference. **Warn, and use
+normal maximize on that monitor** (`"native"`) also stops redirecting maximize there until
+PowerToys or the layout changes.
+
+## The config file
+
+`%APPDATA%\fz-maximize\config.toml` holds everything above except **Start with Windows**.
+The settings window rewrites it, keeping its comments. To edit it by hand, choose **Open
+config file** in the tray menu or the settings window, save, then choose **Reload layouts &
+config** in the tray menu.
+
+Every key is optional; these are the defaults:
+
+```toml
+log_level = "info"
+
+already_in_zone = "restore"
+snap_on_drag_maximize = true
+lock_zone_maximized = true
+bypass_modifier = "shift"
+win_up_bypass = true
+
+preempt_mouse_maximize = true
+preempt_win_up = true
+animate_maximize = true
+animation_style = "auto"
+animation_match_windows = true
+animation_ms = 200
+
+min_aspect_ratio = 0.0
+excluded_monitors = []
+excluded_apps = []
+respect_fancyzones_excluded_apps = true
+
+require_fancyzones_enabled = true
+use_fancyzones_default_layout = true
+fancyzones_check = true
+on_fancyzones_mismatch = "warn"
+```
+
+<Aside>
+If the file has a mistake, fz-maximize logs it and uses the defaults, so it never refuses
+to start. Check the log (tray → **Open log folder**) if a hand edit doesn't seem to apply.
+</Aside>

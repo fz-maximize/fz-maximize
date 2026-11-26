@@ -1,0 +1,95 @@
+---
+title: Getting started
+description: Install fz-maximize, check it sees your FancyZones layout, and choose which monitors it manages.
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Requirements
+
+- Windows 10 (version 1809 or later) or Windows 11, on x64 or ARM64.
+- [Microsoft PowerToys](https://learn.microsoft.com/windows/powertoys/install) with
+  **FancyZones** turned on, and a layout applied to your monitor in the FancyZones editor
+  (<kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>`</kbd>).
+
+Nothing else: no runtimes or redistributables.
+
+## Install
+
+<Tabs>
+	<TabItem label="Installer (recommended)">
+		<Steps>
+		1. Download `fz-maximize-<version>-x64-setup.exe` from the
+		   [latest release](https://github.com/fz-maximize/fz-maximize/releases/latest).
+		   On Windows on ARM, take `-arm64-setup.exe`.
+		2. Run it. It installs for your account only, into
+		   `%LOCALAPPDATA%\Programs\fz-maximize`, with no admin prompt.
+		3. Leave **Start fz-maximize when I sign in** ticked. On the last page, leave
+		   **Start fz-maximize now** ticked and click **Finish**.
+		</Steps>
+
+		<Aside type="caution" title="&quot;Windows protected your PC&quot;">
+		The installer isn't code-signed yet, so Microsoft Defender SmartScreen may warn about it
+		the first time. Click **More info**, check the app is `fz-maximize-<version>-x64-setup.exe`,
+		then **Run anyway**. Every release's SHA-256 checksums are published next to the files.
+		</Aside>
+	</TabItem>
+	<TabItem label="winget">
+		```powershell
+		winget install fz-maximize.fz-maximize
+		```
+		The winget listing is under review. Once it's published, this installs the same
+		per-user installer, and `winget upgrade fz-maximize` updates it.
+	</TabItem>
+	<TabItem label="Portable zip">
+		<Steps>
+		1. Download `fz-maximize-<version>-x64-portable.zip` (or `-arm64-`) from the
+		   [latest release](https://github.com/fz-maximize/fz-maximize/releases/latest).
+		2. Extract it wherever you like and run `fz-maximize.exe`.
+		3. To start it when you sign in, right-click the tray icon and tick **Start with Windows**.
+		</Steps>
+	</TabItem>
+</Tabs>
+
+## First run
+
+A tray icon appears: a blue tile with three white zones (grey while paused). If you don't
+see it, it may be in the overflow area behind the **^** arrow; drag it onto the taskbar to
+keep it visible.
+
+Now maximize any window on a monitor that has a FancyZones layout. It fills the zone it
+overlaps most. Maximize it again and it returns to its previous size.
+[Using fz-maximize](/fz-maximize/using/) covers every gesture.
+
+Right-click the tray icon for:
+
+| Item | What it does |
+|---|---|
+| *status lines* | Whether it's active, and how its zones compare with FancyZones' own snaps |
+| **Settings...** | Opens the settings window |
+| **Pause** / **Resume** | Turns zone maximize off and on. Double-clicking the icon does the same |
+| **Reload layouts & config** | Re-reads FancyZones' layouts and the config file. Use it after editing `config.toml` by hand; FancyZones changes are picked up automatically |
+| **Open config file** | Opens `config.toml` in Notepad |
+| **Open log folder** | Opens the folder with `fz-maximize.log` |
+| **Start with Windows** | Starts fz-maximize when you sign in |
+| **Exit** | Quits fz-maximize |
+
+## Keep a monitor out of it
+
+FancyZones applies its default layout to every monitor, including a laptop's own screen,
+so fz-maximize redirects maximize there too. To keep the normal maximize on a monitor, do
+one of these:
+
+- In the FancyZones editor, choose **No layout** for that monitor.
+- In **Settings → Exclusions**, set **Only monitors at least this wide** to `2`, so only
+  ultrawide monitors (at least twice as wide as they are tall) are affected.
+- In **Settings → Exclusions**, add the monitor to **Leave these monitors alone**. The
+  settings window lists the IDs of the connected monitors right under the box.
+
+## Uninstall
+
+Use **Settings → Apps → Installed apps → fz-maximize → Uninstall**, or
+`winget uninstall fz-maximize.fz-maximize`. That removes the program, its Start menu
+shortcut and its start-with-Windows entry. Your settings (`%APPDATA%\fz-maximize`) and logs
+(`%LOCALAPPDATA%\fz-maximize`) are kept in case you reinstall; delete those folders to
+remove everything.

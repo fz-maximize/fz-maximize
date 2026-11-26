@@ -15,6 +15,19 @@ updates:
       cargo-minor-and-patch:
         update-types: [minor, patch]
 
+  # The website (site/, Astro Starlight). Not shipped with the app.
+  - package-ecosystem: npm
+    directory: /site
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: site
+    groups:
+      site-minor-and-patch:
+        update-types: [minor, patch]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

@@ -289,6 +289,35 @@ tasks:
       - cmd: echo "Created {{.ZIP}}"
         silent: true
 
+  # ---- Website (site/, Astro Starlight; published by .github/workflows/pages.yml) ----
+
+  site:install:
+    desc: Install the website's npm dependencies (site/node_modules)
+    dir: site
+    preconditions: &node
+      - sh: node --version
+        msg: 'The website needs Node.js LTS: `winget install OpenJS.NodeJS.LTS`, or with nvm-windows `nvm install lts` then `nvm use lts`.'
+    sources: [package.json, package-lock.json]
+    generates: [node_modules/.package-lock.json]
+    cmds:
+      - npm ci
+
+  site:
+    desc: Preview the website with live reload at http://localhost:4321/fz-maximize/
+    dir: site
+    preconditions: *node
+    deps: [site:install]
+    cmds:
+      - npm run dev
+
+  site:build:
+    desc: Build the website into site/dist, as the Pages workflow does
+    dir: site
+    preconditions: *node
+    deps: [site:install]
+    cmds:
+      - npm run build
+
   ci:
     desc: Full CI pipeline — checks, then the release packages for all architectures
     cmds:

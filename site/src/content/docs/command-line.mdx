@@ -1,0 +1,44 @@
+---
+title: Command line
+description: fz-maximize's command-line options, for diagnostics and scripting.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Everything is available from the tray icon, but `fz-maximize.exe` also takes a few options.
+The installer doesn't add it to `PATH`; from PowerShell, run it by its full path:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\fz-maximize\fz-maximize.exe" --dump | Out-String
+```
+
+<Aside>
+fz-maximize is a windowed app, not a console app, so PowerShell doesn't show its output
+unless you pipe it somewhere, as with `| Out-String` above.
+</Aside>
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `fz-maximize` | Starts fz-maximize with its tray icon. Only one copy runs at a time. |
+| `fz-maximize --dump` | Shows what fz-maximize sees: each monitor's ID, the FancyZones layout matched to it (and for which virtual desktop), the zone rectangles, and whether maximize is redirected there and why. Add `--json` for machine-readable output. |
+| `fz-maximize --settings` | Opens the settings window of the running copy. |
+| `fz-maximize --quit` | Asks the running copy to exit. |
+| `fz-maximize --init-config` | Creates the config file with every option documented, if it doesn't exist. |
+| `fz-maximize --autostart on` / `off` / `status` | Turns **Start with Windows** on or off, or shows whether it's on. |
+| `fz-maximize --version` | Shows the version. |
+| `fz-maximize --help` | Shows this list. |
+
+## Options
+
+| Option | What it does |
+|---|---|
+| `--config <path>` | Uses this config file instead of `%APPDATA%\fz-maximize\config.toml`. Works with running, `--dump` and `--init-config`. |
+| `--console` | Logs to the console, at debug level, instead of to the log file. |
+| `--json` | With `--dump`: JSON output. |
+
+## Exit codes
+
+`0` means success. For `--quit` and `--settings`, `1` means no running copy was found.
+Other failures also exit with a non-zero code and print what went wrong.

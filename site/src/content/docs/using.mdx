@@ -1,0 +1,84 @@
+---
+title: Using fz-maximize
+description: Every way to maximize into a zone, how to get a normal full-screen maximize, and how zone-maximized windows behave.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Once it's running, there's nothing new to learn: maximize windows the way you always do.
+
+## Maximize into a zone
+
+| You do | What happens |
+|---|---|
+| Click a window's **maximize** button | It fills the zone it overlaps most |
+| Double-click its title bar | Same |
+| Press <kbd>Win</kbd>+<kbd>Up</kbd> | Same, for the active window |
+| Drag it to the top edge of the screen | It fills the zone under the cursor |
+| Maximize a window that fills its zone | It goes back to its size and position from before |
+
+The zone's spacing, as set in the FancyZones editor, is respected, so a zone-maximized
+window lines up exactly with windows FancyZones snapped itself.
+
+<Aside>
+A window that **FancyZones** snapped already fills its zone, so maximizing it gives the
+normal full-monitor maximize. To change what happens when a window already fills its zone,
+see **Maximizing a window that already fills its zone** in [Settings](/fz-maximize/settings/#behavior).
+</Aside>
+
+## Full-screen maximize
+
+Sometimes you do want the whole monitor:
+
+- Hold <kbd>Shift</kbd> while clicking maximize or double-clicking the title bar.
+- Or press <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>Up</kbd>.
+
+The key is configurable (<kbd>Shift</kbd>, <kbd>Ctrl</kbd> or <kbd>Alt</kbd>) under
+**Settings → Behavior → Full-screen maximize**. Windows normally uses
+<kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>Up</kbd> to stretch a window vertically; fz-maximize
+takes that shortcut over unless you untick it there.
+
+## Zone-maximized windows stay put
+
+A window that fz-maximize maximized into a zone behaves like a truly maximized window:
+
+- **Its edges don't resize.** The resize cursor still appears (it belongs to the app), but
+  dragging an edge does nothing.
+- **Dragging its title bar restores it.** It returns to its previous size under the
+  cursor and follows the drag, just like dragging a maximized window off the top of the screen.
+- **Hold <kbd>Shift</kbd>** (the full-screen key) to resize or move it normally instead.
+
+Turn this off with **Lock zone-maximized windows** in **Settings → Behavior**.
+
+## No flash, and an animation
+
+Maximize-button clicks, title-bar double-clicks and <kbd>Win</kbd>+<kbd>Up</kbd> are caught
+*before* Windows maximizes, so the window goes straight into its zone instead of flashing
+full screen first. The move is animated like Windows' own maximize: a zoom-and-fade on
+Windows 10, a morph on Windows 11, at the speed Windows uses. If you've turned off
+animation effects in Windows, fz-maximize doesn't animate either.
+
+Other maximizes are corrected right after Windows makes them, so a full-screen frame
+may flash briefly:
+
+- dragging to the top edge,
+- apps with custom title bars that don't tell Windows where their buttons are,
+- apps that maximize themselves.
+
+## When the normal maximize is used
+
+fz-maximize steps aside, and the normal maximize happens, for:
+
+- monitors with no FancyZones layout, or a layout with a single zone;
+- monitors and apps you've excluded in [Settings](/fz-maximize/settings/#exclusions), and
+  apps in FancyZones' own excluded apps list;
+- windows of apps running as administrator. Windows doesn't let a normal app move them.
+- everything, while fz-maximize is paused (double-click its tray icon) or FancyZones is
+  turned off in PowerToys.
+
+## Multiple monitors and virtual desktops
+
+Each monitor uses its own FancyZones layout, and so does each virtual desktop if you've set
+different layouts per desktop. Docking, undocking, resolution and taskbar changes are
+picked up automatically, and so are edits in the FancyZones editor: the next maximize uses
+the new layout.

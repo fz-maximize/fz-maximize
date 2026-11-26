@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- The tray icon's design (src/tray.rs): blue tile, three zones 25/50/25. -->
+  <rect width="64" height="64" rx="11" fill="#0078D4"/>
+  <g fill="#fff">
+    <rect x="8" y="8" width="10" height="48" rx="2"/>
+    <rect x="22" y="8" width="20" height="48" rx="2"/>
+    <rect x="46" y="8" width="10" height="48" rx="2"/>
+  </g>
+</svg>

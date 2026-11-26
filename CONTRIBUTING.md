@@ -41,16 +41,18 @@ git push origin <branch>:main          # fast-forward; GitHub marks the PR as me
 git push origin --delete <branch>
 ```
 
-Commits should use the project identity (`git config user.name fz-maximize`,
-`git config user.email maintainers@fz-maximize.invalid` in your clone), not a personal one.
+Maintainers commit with the project identity, not a personal one. In your clone:
+`git config user.name fz-maximize` and
+`git config user.email 361363014+fzmaximize@users.noreply.github.com` (the fzmaximize
+account's private GitHub address; older commits use `maintainers@fz-maximize.invalid`).
 
-Dependabot opens weekly PRs for Rust crates and GitHub Actions, plus immediate ones for
-security advisories. Review them like any other PR.
+Dependabot opens weekly PRs for Rust crates, GitHub Actions and the website's npm
+packages, plus immediate ones for security advisories. Review them like any other PR.
 
 ## Development
 
-Prerequisites: Rust (installed automatically from `rust-toolchain.toml` by rustup), the
-Visual Studio Build Tools (C++), and [Task](https://taskfile.dev). See the README.
+Prerequisites, all tasks, the project layout and how fz-maximize stays in sync with
+FancyZones are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). In short:
 
 ```powershell
 task            # list tasks
@@ -68,6 +70,9 @@ Guidelines:
   ported part, note which PowerToys file it mirrors (`upstream/fancyzones-baseline.json`).
 * Run `cargo fmt` and keep `task check` green.
 * Describe *why* in commit messages and PRs, not just what.
+* User-facing changes need their documentation updated: the website pages in
+  `site/src/content/docs/` (preview with `task site`) and, if it's a headline feature, the
+  README.
 
 ## License
 

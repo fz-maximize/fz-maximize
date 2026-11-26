@@ -1,0 +1,93 @@
+---
+title: Troubleshooting
+description: What to check when maximize doesn't go where you expect, and how to report a problem.
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+## Maximize still fills the whole monitor
+
+Work down this list:
+
+1. **Is it running and active?** Right-click the tray icon. The first line says whether
+   it's active or paused (double-click the icon to resume).
+2. **Is FancyZones on?** fz-maximize does nothing while FancyZones is turned off in
+   PowerToys.
+3. **Does the monitor have a layout with more than one zone?** Open the FancyZones editor
+   (<kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>`</kbd>) and check the layout applied to that monitor
+   and virtual desktop.
+4. **Is the monitor or app excluded?** Check **Settings → Exclusions**, including **Only
+   monitors at least this wide**, and FancyZones' own excluded apps.
+5. **Is the app running as administrator?** Windows doesn't let normal apps move those
+   windows, so they keep the normal maximize.
+6. **Were you holding the full-screen key?** <kbd>Shift</kbd> by default.
+
+To see exactly what fz-maximize decided, run [`fz-maximize --dump`](/fz-maximize/command-line/):
+for each monitor it shows the layout it matched, the zones, and whether maximize is
+redirected there, and why not if it isn't.
+
+## The window goes into the wrong zone
+
+- The maximize button, title-bar double-click and <kbd>Win</kbd>+<kbd>Up</kbd> pick the zone
+  the window **overlaps most**. Move the window mostly into the zone you want first.
+- Dragging to the top edge picks the zone **under the cursor**.
+- If the zone's *size or position* is off compared with FancyZones' own snapping, see the
+  next section.
+
+## "FancyZones agreement" shows mismatches
+
+Whenever FancyZones snaps a window itself (a <kbd>Shift</kbd>-drag, for example),
+fz-maximize checks that it computes the same zone, and the tray menu shows the tally. A
+mismatch means the two disagree about where a zone is. Usually that follows a PowerToys
+update that changed how zones are calculated, or a monitor that Windows briefly reported
+differently.
+
+- Shift-drag a few windows into zones and watch whether new snaps match.
+- If they keep disagreeing, set **When they disagree** to **Warn, and use normal maximize on
+  that monitor** (Settings → FancyZones integration) and
+  [open an issue](https://github.com/fz-maximize/fz-maximize/issues) with your PowerToys
+  version and the `--dump` output.
+
+## I can't resize a window
+
+It's zone-maximized and locked, like a maximized window. Drag its title bar to restore it,
+hold <kbd>Shift</kbd> while resizing, or turn off **Lock zone-maximized windows** in
+**Settings → Behavior**.
+
+## Win+Shift+Up no longer stretches a window vertically
+
+fz-maximize uses that shortcut for a full-screen maximize. Untick **Win + Shift + Up** in
+**Settings → Behavior** to give it back to Windows.
+
+## There's no animation
+
+The animation only runs when Windows would animate a maximize itself. Check **Settings →
+Accessibility → Visual effects → Animation effects** in Windows, and **Animate the window
+into its zone** in fz-maximize's **Settings → Appearance**. Dragging to the top edge isn't
+animated.
+
+## An app flashes full screen, or misbehaves
+
+Apps that draw their own title bar without telling Windows where the buttons are can't be
+caught before Windows maximizes them, so they're corrected right after, with a brief flash.
+If an app reacts badly to being moved, add its exe name to **Leave these apps alone**
+(Settings → Exclusions).
+
+## "fz-maximize is already running"
+
+Only one copy runs at a time. Look for the tray icon (it may be behind the **^** overflow
+arrow), or exit the other copy from its tray menu before starting another, for example a
+portable copy and an installed one.
+
+## Reporting a problem
+
+<Steps>
+1. Set **Log detail** to `debug` (Settings → General) and reproduce the problem.
+2. Collect:
+   - the output of `fz-maximize --dump`,
+   - `fz-maximize.log` (tray → **Open log folder**),
+   - your Windows and PowerToys versions.
+3. [Open an issue](https://github.com/fz-maximize/fz-maximize/issues) with what you did, what
+   you expected and what happened, and attach the above. Look through the log first: it
+   names the apps whose windows were moved, which you may prefer to edit out.
+</Steps>

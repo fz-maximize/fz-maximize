@@ -1,0 +1,96 @@
+---
+title: fz-maximize
+description: Make Windows maximize fill the PowerToys FancyZones zone a window is in, instead of the whole monitor.
+template: splash
+hero:
+  title: Maximize into your zone
+  tagline: >-
+    fz-maximize makes the maximize button, a title-bar double-click, <kbd>Win</kbd>+<kbd>Up</kbd>
+    and dragging to the top edge fill the PowerToys FancyZones zone a window is in, instead of
+    stretching it across your whole ultrawide monitor.
+  image:
+    html: |
+      <picture>
+        <source srcset="/fz-maximize/hero-static.svg" media="(prefers-reduced-motion: reduce)" />
+        <img src="/fz-maximize/hero.svg" width="840" height="372" alt="A window on an ultrawide monitor with three zones. Clicking maximize fills the middle zone; clicking again restores it." />
+      </picture>
+  actions:
+    - text: Get started
+      link: /fz-maximize/getting-started/
+      icon: right-arrow
+    - text: Download
+      link: https://github.com/fz-maximize/fz-maximize/releases/latest
+      icon: external
+      variant: secondary
+    - text: GitHub
+      link: https://github.com/fz-maximize/fz-maximize
+      icon: github
+      variant: minimal
+---
+
+import { Card, CardGrid, Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Why
+
+On a 49" ultrawide, maximize is almost never what you want: a browser stretched across
+5120 pixels is unreadable. FancyZones fixes window *placement*, but the maximize button,
+<kbd>Win</kbd>+<kbd>Up</kbd> and every app's habit of maximizing itself still go full screen.
+fz-maximize teaches maximize about your zones.
+
+<CardGrid>
+	<Card title="Every way to maximize" icon="rocket">
+		The maximize button, a title-bar double-click, <kbd>Win</kbd>+<kbd>Up</kbd> and dragging
+		to the top edge all fill the zone the window is in. Maximize again to put it back.
+	</Card>
+	<Card title="Full screen when you want it" icon="seti:windows">
+		Hold <kbd>Shift</kbd> while maximizing, or press <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>Up</kbd>,
+		for a normal full-monitor maximize. The key is your choice.
+	</Card>
+	<Card title="Feels like Windows" icon="star">
+		No flash of a full-screen window first. The move into the zone is animated in the style of
+		your Windows version, at Windows' own speed, and zone-maximized windows lock like truly
+		maximized ones.
+	</Card>
+	<Card title="Your FancyZones layouts" icon="puzzle">
+		Reads layouts straight from FancyZones: templates, custom grid and canvas layouts, per
+		monitor and per virtual desktop. Change a layout and the next maximize uses it.
+	</Card>
+	<Card title="Light and private" icon="approve-check">
+		A small native app: about 10 MB of memory, no CPU while idle, no admin rights, no
+		DLL injection, no network access, no telemetry.
+	</Card>
+	<Card title="Open source" icon="github">
+		MIT licensed, built in Rust. Native builds for x64 and ARM64 Windows.
+	</Card>
+</CardGrid>
+
+## Install
+
+fz-maximize needs Windows 10 or 11 and [PowerToys](https://learn.microsoft.com/windows/powertoys/)
+with FancyZones turned on.
+
+<Tabs>
+	<TabItem label="Installer">
+		Download `fz-maximize-<version>-x64-setup.exe` (or `-arm64-setup.exe` for Windows on ARM)
+		from the [latest release](https://github.com/fz-maximize/fz-maximize/releases/latest) and
+		run it. It installs for your account only, with no admin prompt.
+	</TabItem>
+	<TabItem label="winget">
+		```powershell
+		winget install fz-maximize.fz-maximize
+		```
+		The winget listing is being reviewed; until it's published, use the installer.
+	</TabItem>
+	<TabItem label="Portable">
+		Download `fz-maximize-<version>-x64-portable.zip` from the
+		[latest release](https://github.com/fz-maximize/fz-maximize/releases/latest), extract it
+		anywhere and run `fz-maximize.exe`.
+	</TabItem>
+</Tabs>
+
+Then see [Getting started](/fz-maximize/getting-started/).
+
+<p style="font-size: var(--sl-text-sm); color: var(--sl-color-gray-3)">
+fz-maximize is an independent project, not affiliated with or endorsed by Microsoft.
+"PowerToys" and "FancyZones" are Microsoft product names, used only to describe compatibility.
+</p>

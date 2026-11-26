@@ -1,0 +1,45 @@
+---
+title: Privacy
+description: What fz-maximize stores, and what it doesn't collect.
+---
+
+**fz-maximize doesn't collect, send or share any data.** It makes no network
+connections and contains no telemetry, analytics or crash reporting.
+
+## What it reads
+
+To do its job, fz-maximize reads, on your computer only:
+
+- FancyZones' layout and settings files, in `%LOCALAPPDATA%\Microsoft\PowerToys`;
+- the position, size, title and app name of windows as they are maximized, moved or
+  snapped;
+- mouse clicks and the <kbd>Win</kbd>+<kbd>Up</kbd> key combination, only to recognize a
+  maximize before Windows acts on it. Nothing you type is recorded;
+- your monitors' identities (model and serial number, from Windows), to match them with
+  FancyZones' layouts.
+
+## What it stores
+
+All on your computer:
+
+| What | Where |
+|---|---|
+| Your settings | `%APPDATA%\fz-maximize\config.toml` |
+| A log of what it did, including the app names (like `notepad.exe`) of windows it moved | `%LOCALAPPDATA%\fz-maximize\fz-maximize.log` |
+| Monitor identities it has seen, for when Windows can't report them | `%LOCALAPPDATA%\fz-maximize\monitors.json` |
+
+Uninstalling keeps these files in case you reinstall; delete both folders to remove them.
+
+## Downloads
+
+Release files are hosted on GitHub, and this site on GitHub Pages; GitHub's
+[privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement)
+covers those downloads and visits. If you install with winget, Microsoft's winget service
+is involved in finding the download.
+
+## Changes
+
+If a future version does connect to the internet, for example to check for updates, it
+will say so here and in its release notes, and it will be possible to turn it off.
+
+Questions: [open an issue](https://github.com/fz-maximize/fz-maximize/issues).

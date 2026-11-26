@@ -1,0 +1,62 @@
+---
+title: FAQ
+description: Common questions about fz-maximize.
+---
+
+## Do I need PowerToys?
+
+Yes. fz-maximize uses the zones you set up in FancyZones; it doesn't have its own layout
+editor. It works alongside FancyZones rather than replacing it: FancyZones still handles
+Shift-dragging windows into zones, and fz-maximize handles maximize.
+
+## Does it need administrator rights?
+
+No. It installs and runs under your own account. The flip side is that Windows doesn't let
+it move windows of apps running as administrator, so those keep the normal maximize.
+
+## How does it catch maximize before Windows does?
+
+It uses Windows' standard low-level mouse and keyboard hooks, on a thread of its own, to
+recognize a click on a maximize button, a title-bar double-click and
+<kbd>Win</kbd>+<kbd>Up</kbd>. It doesn't inject code into other apps, record what you type or
+click, or send anything anywhere. Everything else it learns from Windows' window events.
+
+## Does it send any data?
+
+No. fz-maximize doesn't connect to the internet and has no telemetry. See
+[Privacy](/fz-maximize/privacy/).
+
+## Does it slow anything down?
+
+It uses about 10 MB of memory and no CPU while idle. It only does work when a window is
+maximized, moved or snapped.
+
+## Does it work with several monitors and virtual desktops?
+
+Yes. Each monitor and virtual desktop uses its own FancyZones layout, and docking,
+undocking and resolution changes are picked up automatically.
+
+## Does it run on Windows on ARM?
+
+Yes. There are native ARM64 builds; take the `arm64` installer or zip.
+
+## How do I update it?
+
+Install the new version over the old one: run the new installer, or
+`winget upgrade fz-maximize.fz-maximize` once the winget listing is published. Your
+settings are kept, and the running copy is closed and restarted for you. Releases are
+announced on the [GitHub releases page](https://github.com/fz-maximize/fz-maximize/releases);
+watch the repository (**Watch → Custom → Releases**) to be notified.
+
+## Why does Windows warn about the installer?
+
+The installer isn't code-signed yet, so SmartScreen doesn't recognize it. Choose **More
+info → Run anyway**. Each release lists SHA-256 checksums so you can verify the download,
+and the builds are made by GitHub Actions from the public source, with a build-provenance
+attestation.
+
+## Is this a Microsoft product?
+
+No. fz-maximize is an independent open-source project, not affiliated with or endorsed by
+Microsoft. It's MIT licensed, and parts of it are ported from PowerToys, which is also MIT
+licensed.

@@ -36,7 +36,7 @@ Nothing else: no runtimes or redistributables.
 	</TabItem>
 	<TabItem label="winget">
 		```powershell
-		winget install fz-maximize.fz-maximize
+		winget install fz-maximize
 		```
 		The winget listing is under review. Once it's published, this installs the same
 		per-user installer, and `winget upgrade fz-maximize` updates it.
@@ -82,14 +82,33 @@ one of these:
 
 - In the FancyZones editor, choose **No layout** for that monitor.
 - In **Settings → Exclusions**, set **Only monitors at least this wide** to `2`, so only
-  ultrawide monitors (at least twice as wide as they are tall) are affected.
+  ultrawide monitors are affected ([why 2](#choosing-a-minimum-width)).
 - In **Settings → Exclusions**, add the monitor to **Leave these monitors alone**. The
   settings window lists the IDs of the connected monitors right under the box.
+
+### Choosing a minimum width
+
+**Only monitors at least this wide** compares each monitor's *shape*, its aspect ratio:
+its width divided by its height. It doesn't depend on the monitor's physical size or
+resolution, only on how much wider than tall it is.
+
+| Screen shape | Width ÷ height | Managed with `2`? |
+|---|---|---|
+| 3:2 (many laptops and tablets) | 1.5 | No |
+| 16:10 (many laptops and monitors) | 1.6 | No |
+| 16:9 (most monitors and TVs) | 1.78 | No |
+| 21:9 (ultrawide) | about 2.4 | Yes |
+| 32:9 (super ultrawide) | 3.56 | Yes |
+
+Standard screens all fall below 2 and ultrawides all fall above it, so `2` separates them
+cleanly. To find a monitor's ratio, divide its width by its height in pixels: the settings
+window shows each connected monitor's resolution under **Leave these monitors alone**.
+`0`, the default, manages every monitor with a multi-zone layout, whatever its shape.
 
 ## Uninstall
 
 Use **Settings → Apps → Installed apps → fz-maximize → Uninstall**, or
-`winget uninstall fz-maximize.fz-maximize`. That removes the program, its Start menu
+`winget uninstall fz-maximize`. That removes the program, its Start menu
 shortcut and its start-with-Windows entry. Your settings (`%APPDATA%\fz-maximize`) and logs
 (`%LOCALAPPDATA%\fz-maximize`) are kept in case you reinstall; delete those folders to
 remove everything.

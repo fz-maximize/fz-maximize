@@ -35,7 +35,7 @@ Requires Windows 10 (1809+) or 11, x64 or ARM64, and PowerToys with FancyZones t
   from the [latest release](https://github.com/fz-maximize/fz-maximize/releases/latest) and
   run it. It installs for your account only, with no admin prompt. It isn't code-signed
   yet, so SmartScreen may warn: choose **More info → Run anyway**.
-* **winget:** `winget install fz-maximize.fz-maximize` (the listing is under review).
+* **winget:** `winget install fz-maximize` (the listing is under review).
 * **Portable:** extract `fz-maximize-<version>-x64-portable.zip` anywhere and run
   `fz-maximize.exe`.
 

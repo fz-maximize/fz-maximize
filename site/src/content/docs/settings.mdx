@@ -128,8 +128,11 @@ Animation length in milliseconds (50 to 1000), used when the option above is off
 
 <small><code>min_aspect_ratio</code> · default <code>0</code></small>
 
-Only manage monitors at least this many times as wide as they are tall. `2` limits
-fz-maximize to ultrawide monitors; `0` manages every monitor with a multi-zone layout.
+Only manage monitors whose aspect ratio, width divided by height, is at least this
+number. Standard screens are 1.5 to 1.78 (3:2, 16:10, 16:9) and ultrawides about 2.4 (21:9)
+or 3.56 (32:9), so `2` limits fz-maximize to ultrawide monitors. `0` manages every monitor
+with a multi-zone layout. See
+[Choosing a minimum width](/fz-maximize/getting-started/#choosing-a-minimum-width).
 
 #### Leave these monitors alone
 

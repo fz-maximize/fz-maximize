@@ -21,12 +21,18 @@
 //! what fades in is its real new content.
 //!
 //! How the move stays hidden: a click-through overlay just above the window covers both
-//! rects. Before the window moves, it shows a snapshot of the screen, so nothing visibly
-//! changes. The old window's pixels go into a cloaked helper window, which the overlay
-//! shows as a thumbnail ("old"); the real window is shown as a second thumbnail ("new").
-//! The overlay paints the snapshot (the desktop as it was) where the real window now is
-//! and the old one wasn't, and is transparent elsewhere, so the desktop the old window
-//! uncovered shows as it really is.
+//! rects. It has no pixels of its own, only thumbnails, all drawn by the compositor:
+//!
+//! 1. **Background:** live thumbnails of every window beneath the target, and of the
+//!    desktop, in z-order. Together they show exactly what the target is about to cover,
+//!    so the real window can move into its zone underneath without being seen.
+//! 2. **Old:** the old window's frame, copied once into a cloaked helper window.
+//! 3. **New:** the real window, live, at its new size.
+//!
+//! Only the old window's frame is copied from the screen, and nothing has to be uploaded
+//! for the background, so the animation starts within a frame or two of the gesture.
+//! (Copying the whole area through GDI took 70-120 ms on a 4K hybrid-GPU laptop, and
+//! showing it as a layered window another 100 ms.)
 //!
 //! Runs on its own thread so the main thread keeps handling events. A new request
 //! finishes the current animation immediately.
@@ -54,14 +60,14 @@ use windows::Win32::System::Threading::{
     GetCurrentThread, GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    ANIMATIONINFO, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GW_HWNDPREV, GWL_EXSTYLE,
-    GetClientRect, GetMessageW, GetWindow, GetWindowLongPtrW, HTTRANSPARENT, HWND_TOP, HWND_TOPMOST, IsWindow,
-    LWA_ALPHA, LWA_COLORKEY, MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW, PostThreadMessageW, RegisterClassExW,
-    SPI_GETANIMATION, SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SWP_SHOWWINDOW, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow,
-    SystemParametersInfoW, TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_ERASEBKGND, WM_NCHITTEST, WM_PAINT, WM_QUIT,
-    WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-    WS_POPUP,
+    ANIMATIONINFO, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows, GW_HWNDPREV,
+    GWL_EXSTYLE, GetClientRect, GetMessageW, GetWindow, GetWindowLongPtrW, HTTRANSPARENT, HWND_TOP, HWND_TOPMOST,
+    IsWindow, IsWindowVisible, LWA_ALPHA, MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW, PostThreadMessageW,
+    RegisterClassExW, SPI_GETANIMATION, SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetLayeredWindowAttributes, SetTimer, SetWindowPos,
+    ShowWindow, SystemParametersInfoW, TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_ERASEBKGND, WM_NCHITTEST,
+    WM_PAINT, WM_QUIT, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{BOOL, HSTRING, PCWSTR, w};
 
@@ -176,6 +182,70 @@ pub fn frame_source(w: i32, h: i32, has_borders: bool, m: &Margins) -> Rect {
     } else {
         Rect::new(m.left, m.top, m.left + w, m.top + h)
     }
+}
+
+/// `rects` minus `cut`: the parts of the (non-overlapping) rects outside `cut`, still
+/// non-overlapping. Each rect splits into at most four (above, below, left, right).
+pub fn subtract(rects: &[Rect], cut: &Rect) -> Vec<Rect> {
+    let mut out = Vec::with_capacity(rects.len() + 4);
+    for r in rects {
+        let i = r.intersection(cut);
+        if i.is_empty() {
+            out.push(*r);
+            continue;
+        }
+        for piece in [
+            Rect::new(r.left, r.top, r.right, i.top),
+            Rect::new(r.left, i.bottom, r.right, r.bottom),
+            Rect::new(r.left, i.top, i.left, i.bottom),
+            Rect::new(i.right, i.top, r.right, i.bottom),
+        ] {
+            if !piece.is_empty() {
+                out.push(piece);
+            }
+        }
+    }
+    out
+}
+
+/// Which parts of each window to draw so that every pixel of `area` is drawn once,
+/// given windows from top to bottom as (frame, opaque). A window gets the parts of
+/// `area` that no opaque window above it covers; a see-through one doesn't hide what's
+/// beneath it. Stops once `area` is covered. Returns (window index, pieces), top first,
+/// and whether opaque windows cover all of `area`.
+pub fn visible_pieces(area: &Rect, windows: &[(Rect, bool)]) -> (Vec<(usize, Vec<Rect>)>, bool) {
+    let mut uncovered = vec![*area];
+    let mut out = Vec::new();
+    for (i, (frame, opaque)) in windows.iter().enumerate() {
+        if uncovered.is_empty() {
+            break;
+        }
+        let pieces: Vec<Rect> = uncovered
+            .iter()
+            .map(|u| u.intersection(frame))
+            .filter(|p| !p.is_empty())
+            .collect();
+        if pieces.is_empty() {
+            continue;
+        }
+        if *opaque {
+            uncovered = subtract(&uncovered, frame);
+        }
+        out.push((i, pieces));
+    }
+    let covered = uncovered.is_empty();
+    (out, covered)
+}
+
+/// The part of a thumbnail source (`full`, which shows the window's `frame`) that shows
+/// `piece` of the frame. Scales when the source isn't 1:1 with the screen (apps that
+/// Windows scales for DPI).
+pub fn source_piece(full: &Rect, frame: &Rect, piece: &Rect) -> Rect {
+    let sx = f64::from(full.width()) / f64::from(frame.width().max(1));
+    let sy = f64::from(full.height()) / f64::from(frame.height().max(1));
+    let x = |v: i32| full.left + (f64::from(v - frame.left) * sx).round() as i32;
+    let y = |v: i32| full.top + (f64::from(v - frame.top) * sy).round() as i32;
+    Rect::new(x(piece.left), y(piece.top), x(piece.right), y(piece.bottom))
 }
 
 /// One frame: where the old and new images are drawn and how opaque they are (0-255).
@@ -337,11 +407,7 @@ impl Animator {
                 // Thread is ending: release the cached windows.
                 WINDOWS.with_borrow_mut(|w| {
                     if let Some(w) = w.take() {
-                        unsafe {
-                            let _ = DwmUnregisterThumbnail(w.old_thumb);
-                            let _ = DestroyWindow(w.overlay);
-                            let _ = DestroyWindow(w.source);
-                        }
+                        destroy_windows(w);
                     }
                 });
             })
@@ -450,12 +516,8 @@ fn blit(dst: HDC, d: &Rect, src: HDC, sx: i32, sy: i32) {
     }
 }
 
-/// The two static pictures, composed once (the animation itself is all thumbnails).
+/// The old window's visible frame, painted by the cloaked helper window (`source`).
 struct Scene {
-    /// The overlay's background: the desktop as it was where the real window now is,
-    /// transparent (colour key) elsewhere.
-    background: Canvas,
-    /// The old window's visible frame, for the cloaked helper window.
     old_window: Canvas,
     source: HWND,
 }
@@ -476,16 +538,130 @@ unsafe extern "system" fn picture_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 let mut client = RECT::default();
                 let _ = GetClientRect(hwnd, &mut client);
                 let client = rect_from(client);
+                // Only the helper paints; the overlay has no surface (thumbnails only).
                 SCENE.with_borrow(|scene| match scene {
                     Some(s) if s.source == hwnd => blit(hdc, &client, s.old_window.dc, 0, 0),
-                    Some(s) => blit(hdc, &client, s.background.dc, 0, 0),
-                    None => fill(hdc, &client, KEY),
+                    _ => fill(hdc, &client, KEY),
                 });
                 let _ = EndPaint(hwnd, &ps);
             }
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// Live thumbnails of what's beneath `target` in z-order (other windows and the
+/// desktop), drawn in the overlay where they really are: together, the screen as it
+/// looks without the target. Only the visible part of each window is drawn, so every
+/// pixel is drawn about once. Unregistered on drop.
+struct Background {
+    thumbs: Vec<isize>,
+}
+
+/// More pieces than this: don't animate (each piece is a thumbnail to compose per frame).
+const MAX_BACKGROUND_PIECES: usize = 32;
+
+impl Background {
+    fn build(overlay: HWND, target: HWND, area: &Rect) -> Option<Self> {
+        // Top-level windows, topmost first (EnumWindows' order is z-order).
+        unsafe extern "system" fn cb(h: HWND, data: LPARAM) -> BOOL {
+            // SAFETY: `data` is the &mut Vec below, alive for the whole enumeration.
+            unsafe { &mut *(data.0 as *mut Vec<HWND>) }.push(h);
+            BOOL(1)
+        }
+        let mut all: Vec<HWND> = Vec::new();
+        unsafe {
+            let _ = EnumWindows(Some(cb), LPARAM(&mut all as *mut _ as isize));
+        }
+        let below = all.iter().position(|&h| h == target)? + 1;
+        // (window, window rect, visible frame), top first.
+        let mut beneath: Vec<(HWND, Rect, Rect)> = Vec::new();
+        let mut layers: Vec<(Rect, bool)> = Vec::new();
+        for &h in &all[below..] {
+            if h == overlay || !unsafe { IsWindowVisible(h) }.as_bool() || window::is_iconic(h) || window::is_cloaked(h)
+            {
+                continue;
+            }
+            let Some(win) = window::window_rect(h) else {
+                continue;
+            };
+            // Windows without a DWM frame (the desktop) report none: the window rect is it.
+            let frame = window::frame_rect(h).unwrap_or(win);
+            if frame.intersection(area).is_empty() {
+                continue;
+            }
+            // Layered windows may be see-through: draw them, but not as covering.
+            let ex = unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) } as u32;
+            beneath.push((h, win, frame));
+            layers.push((frame, ex & WS_EX_LAYERED.0 == 0));
+        }
+        // Only the on-screen part matters: a window may start partly off-screen.
+        let on_screen = area.intersection(&virtual_screen());
+        let (visible, covered) = visible_pieces(&on_screen, &layers);
+        let pieces: usize = visible.iter().map(|(_, p)| p.len()).sum();
+        // Anything left uncovered would let the real window show through.
+        if !covered || pieces > MAX_BACKGROUND_PIECES {
+            tracing::debug!(
+                windows = beneath.len(),
+                pieces,
+                covered,
+                "no complete background; not animating"
+            );
+            return None;
+        }
+        let mut bg = Background {
+            thumbs: Vec::with_capacity(pieces),
+        };
+        // Bottom first: the compositor draws later thumbnails over earlier ones.
+        for (i, rects) in visible.into_iter().rev() {
+            let (h, win, frame) = beneath[i];
+            for piece in rects {
+                let Ok(thumb) = (unsafe { DwmRegisterThumbnail(overlay, h) }) else {
+                    tracing::debug!(hwnd = h.0 as isize, "background thumbnail unavailable; not animating");
+                    return None;
+                };
+                bg.thumbs.push(thumb);
+                let margins = Margins::between(win, frame);
+                let (w, ht) = unsafe { DwmQueryThumbnailSourceSize(thumb) }
+                    .map(|s| (s.cx, s.cy))
+                    .unwrap_or((frame.width(), frame.height()));
+                let full = frame_source(w, ht, w >= win.width() - 1, &margins);
+                set_thumb(
+                    thumb,
+                    &piece.offset(-area.left, -area.top),
+                    &source_piece(&full, &frame, &piece),
+                    255,
+                );
+            }
+        }
+        Some(bg)
+    }
+}
+
+/// The bounding box of all monitors.
+fn virtual_screen() -> Rect {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    };
+    let (x, y, w, h) = unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        )
+    };
+    Rect::new(x, y, x + w, y + h)
+}
+
+impl Drop for Background {
+    fn drop(&mut self) {
+        for &t in &self.thumbs {
+            unsafe {
+                let _ = DwmUnregisterThumbnail(t);
+            }
+        }
     }
 }
 
@@ -618,12 +794,12 @@ fn set_thumb(thumb: isize, dest: &Rect, src: &Rect, opacity: u8) {
     }
 }
 
-/// The overlay and the cloaked helper window, kept between animations (creating two
-/// big windows costs tens of milliseconds) and destroyed after a while unused.
+/// The overlay and the cloaked helper window, kept between animations and destroyed
+/// after a while unused. Thumbnails are registered per animation, bottom to top, because
+/// the compositor draws them in the order they were registered.
 struct Windows {
     overlay: HWND,
     source: HWND,
-    old_thumb: isize,
     last_used: Instant,
 }
 
@@ -634,15 +810,17 @@ thread_local! {
     static WINDOWS: RefCell<Option<Windows>> = const { RefCell::new(None) };
 }
 
-fn cached_windows() -> Option<(HWND, HWND, isize)> {
+fn cached_windows() -> Option<(HWND, HWND)> {
     WINDOWS.with_borrow_mut(|w| {
         if let Some(w) = w.as_mut() {
             w.last_used = Instant::now();
-            return Some((w.overlay, w.source, w.old_thumb));
+            return Some((w.overlay, w.source));
         }
         let tiny = Rect::new(0, 0, 1, 1);
         let source = create_popup(&tiny, WINDOW_EX_STYLE(0))?;
-        let Some(overlay) = create_popup(&tiny, WINDOW_EX_STYLE(0)) else {
+        // The overlay has no surface of its own: no pixels to paint or upload, however
+        // big it is; it only hosts thumbnails.
+        let Some(overlay) = create_popup(&tiny, WS_EX_NOREDIRECTIONBITMAP) else {
             unsafe {
                 let _ = DestroyWindow(source);
             }
@@ -658,37 +836,48 @@ fn cached_windows() -> Option<(HWND, HWND, isize)> {
             );
             let _ = SetLayeredWindowAttributes(source, COLORREF(0), 255, LWA_ALPHA);
             let _ = ShowWindow(source, SW_SHOWNOACTIVATE);
-            let _ = SetLayeredWindowAttributes(overlay, KEY, 0, LWA_COLORKEY);
+            let _ = SetLayeredWindowAttributes(overlay, COLORREF(0), 255, LWA_ALPHA);
         }
-        let Ok(old_thumb) = (unsafe { DwmRegisterThumbnail(overlay, source) }) else {
-            unsafe {
-                let _ = DestroyWindow(overlay);
-                let _ = DestroyWindow(source);
-            }
-            return None;
-        };
         *w = Some(Windows {
             overlay,
             source,
-            old_thumb,
             last_used: Instant::now(),
         });
-        Some((overlay, source, old_thumb))
+        Some((overlay, source))
     })
+}
+
+fn destroy_windows(w: Windows) {
+    unsafe {
+        let _ = DestroyWindow(w.overlay);
+        let _ = DestroyWindow(w.source);
+    }
 }
 
 /// Called on the thread's idle timer.
 fn drop_idle_windows() {
     WINDOWS.with_borrow_mut(|w| {
         if w.as_ref().is_some_and(|w| w.last_used.elapsed() >= KEEP_WINDOWS) {
-            let w = w.take().unwrap();
-            unsafe {
-                let _ = DwmUnregisterThumbnail(w.old_thumb);
-                let _ = DestroyWindow(w.overlay);
-                let _ = DestroyWindow(w.source);
-            }
+            destroy_windows(w.take().unwrap());
         }
     });
+}
+
+/// Unregisters a thumbnail on drop.
+struct Thumb(isize);
+
+impl Thumb {
+    fn register(dest: HWND, source: HWND) -> Option<Self> {
+        unsafe { DwmRegisterThumbnail(dest, source) }.ok().map(Thumb)
+    }
+}
+
+impl Drop for Thumb {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DwmUnregisterThumbnail(self.0);
+        }
+    }
 }
 
 fn animate_move(target: HWND, req: &Request) -> bool {
@@ -704,50 +893,21 @@ fn animate_move(target: HWND, req: &Request) -> bool {
     let setup_start = Instant::now();
     let area = union(&req.from, &req.to);
     let rel = |r: &Rect| r.offset(-area.left, -area.top);
-    let (from_r, to_win_r) = (rel(&from), rel(&req.to));
+    let from_r = rel(&from);
 
-    // 1. The static pictures, from one capture of the screen: the old window's frame,
-    //    then, in place, the overlay's background (the desktop as it was where the real
-    //    window will be, transparent elsewhere).
-    let Some(background) = Canvas::capture(&area) else {
+    // 1. The old window's frame: the only pixels copied from the screen.
+    let Some(old_window) = Canvas::capture(&from) else {
         return false;
     };
     let capture_ms = setup_start.elapsed().as_millis() as u64;
-    let Some(old_window) = Canvas::new(from.width(), from.height()) else {
-        return false;
-    };
     let old_src = Rect::new(0, 0, from.width(), from.height());
-    blit(old_window.dc, &old_src, background.dc, from_r.left, from_r.top);
-    let full = Rect::new(0, 0, area.width(), area.height());
-    for outside in [
-        Rect::new(0, 0, full.right, to_win_r.top),
-        Rect::new(0, to_win_r.bottom, full.right, full.bottom),
-        Rect::new(0, to_win_r.top, to_win_r.left, to_win_r.bottom),
-        Rect::new(to_win_r.right, to_win_r.top, full.right, to_win_r.bottom),
-        from_r,
-    ] {
-        fill(background.dc, &outside, KEY);
-    }
-    let compose_ms = setup_start.elapsed().as_millis() as u64;
 
-    // 2. Position the (cached) helper and overlay windows; the overlay directly above the
-    //    target in z-order.
-    let Some((overlay, source, old_thumb)) = cached_windows() else {
+    // 2. The overlay, directly above the target in z-order, with its thumbnails from
+    //    bottom to top: background, old, new. Nothing is visible yet.
+    let Some((overlay, source)) = cached_windows() else {
         return false;
     };
-    SCENE.with_borrow_mut(|s| {
-        *s = Some(Scene {
-            background,
-            old_window,
-            source,
-        })
-    });
-    let Ok(new_thumb) = (unsafe { DwmRegisterThumbnail(overlay, target) }) else {
-        return false;
-    };
-    let topmost = (unsafe { GetWindowLongPtrW(target, GWL_EXSTYLE) } as u32) & WS_EX_TOPMOST.0 != 0;
-    set_thumb(old_thumb, &from_r, &old_src, 255);
-    set_thumb(new_thumb, &to_win_r, &Rect::default(), 0);
+    SCENE.with_borrow_mut(|s| *s = Some(Scene { old_window, source }));
     unsafe {
         let _ = SetWindowPos(
             source,
@@ -760,6 +920,29 @@ fn animate_move(target: HWND, req: &Request) -> bool {
         );
         let _ = InvalidateRect(Some(source), None, false);
         let _ = UpdateWindow(source);
+        let _ = SetWindowPos(
+            overlay,
+            None,
+            area.left,
+            area.top,
+            area.width(),
+            area.height(),
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+    let Some(background) = Background::build(overlay, target, &area) else {
+        return false;
+    };
+    let (Some(old), Some(new)) = (Thumb::register(overlay, source), Thumb::register(overlay, target)) else {
+        return false;
+    };
+    set_thumb(old.0, &from_r, &old_src, 255);
+    set_thumb(new.0, &rel(&req.to), &Rect::default(), 0);
+    let composed_ms = setup_start.elapsed().as_millis() as u64;
+
+    // 3. Show it: it looks exactly like the screen beneath it.
+    let topmost = (unsafe { GetWindowLongPtrW(target, GWL_EXSTYLE) } as u32) & WS_EX_TOPMOST.0 != 0;
+    unsafe {
         if topmost {
             let _ = SetWindowPos(
                 overlay,
@@ -778,33 +961,28 @@ fn animate_move(target: HWND, req: &Request) -> bool {
         let _ = SetWindowPos(
             overlay,
             Some(insert_after),
-            area.left,
-            area.top,
-            area.width(),
-            area.height(),
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
-        let _ = InvalidateRect(Some(overlay), None, false);
-        let _ = UpdateWindow(overlay);
     }
     let shown_ms = setup_start.elapsed().as_millis() as u64;
-    // The overlay now shows exactly what was on screen.
     flush();
     let flushed_ms = setup_start.elapsed().as_millis() as u64;
 
     // Does DWM give us the window with its invisible borders, or just the frame? Ask now,
     // while the window still has its old, known size.
-    let initial = unsafe { DwmQueryThumbnailSourceSize(new_thumb) }
-        .map(|s| (s.cx, s.cy))
-        .ok();
+    let initial = unsafe { DwmQueryThumbnailSourceSize(new.0) }.map(|s| (s.cx, s.cy)).ok();
     let source_has_borders = initial.is_some_and(|(w, _)| w >= req.from.width() - 1);
 
-    // 3. Move the real window underneath; animate.
+    // 4. Move the real window underneath; animate.
     req.place();
     let placed_ms = setup_start.elapsed().as_millis() as u64;
     // The new image: the visible frame part of the real window (see `frame_source`).
     let new_src = || {
-        let (w, h) = unsafe { DwmQueryThumbnailSourceSize(new_thumb) }
+        let (w, h) = unsafe { DwmQueryThumbnailSourceSize(new.0) }
             .map(|s| (s.cx, s.cy))
             .unwrap_or((req.to.width(), req.to.height()));
         frame_source(w, h, source_has_borders, &margins)
@@ -814,8 +992,8 @@ fn animate_move(target: HWND, req: &Request) -> bool {
     let mut frames = 0u32;
     loop {
         let f = frame(req.style, &from, &to, start.elapsed(), req.duration);
-        set_thumb(old_thumb, &rel(&f.old), &old_src, f.old_opacity);
-        set_thumb(new_thumb, &rel(&f.new), &new_src(), f.new_opacity);
+        set_thumb(old.0, &rel(&f.old), &old_src, f.old_opacity);
+        set_thumb(new.0, &rel(&f.new), &new_src(), f.new_opacity);
         flush();
         frames += 1;
         if f.done || pump_and_check_new_request() {
@@ -824,16 +1002,16 @@ fn animate_move(target: HWND, req: &Request) -> bool {
     }
     let elapsed = start.elapsed();
 
-    // 4. Final frame: the new image exactly over the real window; then reveal it.
-    set_thumb(old_thumb, &rel(&from), &old_src, 0);
-    set_thumb(new_thumb, &rel(&to), &new_src(), 255);
+    // 5. Final frame: the new image exactly over the real window; then reveal it.
+    set_thumb(old.0, &rel(&from), &old_src, 0);
+    set_thumb(new.0, &rel(&to), &new_src(), 255);
     wait_for_arrival(target, &req.to);
     flush();
     unsafe {
-        let _ = DwmUnregisterThumbnail(new_thumb);
         let _ = ShowWindow(overlay, SW_HIDE);
     }
-    set_thumb(old_thumb, &from_r, &old_src, 0);
+    let background_windows = background.thumbs.len();
+    drop((new, old, background));
     tracing::debug!(
         style = ?req.style,
         frames,
@@ -841,10 +1019,11 @@ fn animate_move(target: HWND, req: &Request) -> bool {
         fps = (f64::from(frames) / elapsed.as_secs_f64().max(0.001)).round(),
         setup_ms,
         capture_ms,
-        compose_ms,
+        composed_ms,
         shown_ms,
         flushed_ms,
         placed_ms,
+        background_windows,
         source_has_borders,
         "animation finished"
     );
@@ -998,6 +1177,74 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn total_area(rects: &[Rect]) -> i64 {
+        rects.iter().map(Rect::area).sum()
+    }
+
+    #[test]
+    fn subtract_leaves_the_rest_without_overlaps() {
+        let r = Rect::new(0, 0, 100, 100);
+        // A hole in the middle: four pieces around it.
+        let rest = subtract(&[r], &Rect::new(25, 25, 75, 75));
+        assert_eq!(rest.len(), 4);
+        assert_eq!(total_area(&rest), 100 * 100 - 50 * 50);
+        for (i, a) in rest.iter().enumerate() {
+            for b in &rest[i + 1..] {
+                assert!(a.intersection(b).is_empty(), "{a} overlaps {b}");
+            }
+        }
+        assert!(subtract(&[r], &Rect::new(-10, -10, 200, 200)).is_empty());
+        assert_eq!(subtract(&[r], &Rect::new(200, 200, 300, 300)), vec![r]);
+    }
+
+    #[test]
+    fn background_draws_each_pixel_once() {
+        let area = Rect::new(0, 0, 1000, 1000);
+        let desktop = (Rect::new(-500, -500, 4000, 3000), true);
+        // A maximized window hides everything beneath it: the desktop isn't drawn at all.
+        let maximized = (Rect::new(0, 0, 3840, 2300), true);
+        let hidden = (Rect::new(100, 100, 600, 600), true);
+        let (pieces, covered) = visible_pieces(&area, &[maximized, hidden, desktop]);
+        assert!(covered);
+        assert_eq!(pieces, vec![(0, vec![area])]);
+
+        // Two windows side by side, the desktop shows in between.
+        let left = (Rect::new(0, 0, 400, 1000), true);
+        let right = (Rect::new(600, 0, 1000, 1000), true);
+        let (pieces, covered) = visible_pieces(&area, &[left, right, desktop]);
+        assert!(covered);
+        let drawn: Vec<Rect> = pieces.iter().flat_map(|(_, p)| p.clone()).collect();
+        assert_eq!(total_area(&drawn), area.area(), "every pixel exactly once");
+        assert_eq!(pieces[2], (2, vec![Rect::new(400, 0, 600, 1000)]));
+
+        // A see-through window is drawn but doesn't hide what's beneath it.
+        let glass = (Rect::new(0, 0, 1000, 1000), false);
+        let (pieces, covered) = visible_pieces(&area, &[glass, desktop]);
+        assert!(covered);
+        assert_eq!(pieces.len(), 2);
+
+        // Nothing opaque under part of the area: not covered.
+        let (_, covered) = visible_pieces(&area, &[left]);
+        assert!(!covered);
+    }
+
+    #[test]
+    fn source_pieces_follow_the_window() {
+        let frame = Rect::new(100, 100, 600, 400);
+        let full = Rect::new(7, 0, 507, 300); // border-offset source, 1:1
+        assert_eq!(source_piece(&full, &frame, &frame), full);
+        assert_eq!(
+            source_piece(&full, &frame, &Rect::new(200, 150, 300, 250)),
+            Rect::new(107, 50, 207, 150)
+        );
+        // Source at half the screen size (an app scaled by Windows for DPI).
+        let half = Rect::new(0, 0, 250, 150);
+        assert_eq!(
+            source_piece(&half, &frame, &Rect::new(300, 200, 600, 400)),
+            Rect::new(100, 50, 250, 150)
+        );
     }
 
     #[test]

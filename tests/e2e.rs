@@ -1228,7 +1228,10 @@ fn trace_animation(
                     r: target.r.max(window_rect(h).r),
                     b: target.b.max(window_rect(h).b),
                 };
-                capture_bmp(&region, path);
+                // On its own thread: a GDI capture takes 100+ ms on a 4K screen, which
+                // would stop this loop from watching the overlay.
+                let path = path.to_path_buf();
+                std::thread::spawn(move || capture_bmp(&region, &path));
                 captured = true;
             }
         }

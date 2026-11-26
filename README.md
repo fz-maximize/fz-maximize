@@ -25,7 +25,8 @@ zone a window is in, instead of the whole monitor.
 * **Uses your FancyZones layouts** as they are: templates, custom grid and canvas layouts,
   per monitor and per virtual desktop. Layout changes apply at the next maximize.
 * **Small and private:** a native app using about 10 MB of memory and no CPU while idle.
-  No admin rights, no DLL injection, no network access, no telemetry.
+  No admin rights, no DLL injection, no telemetry. The only network use is an optional,
+  off-by-default daily update check.
 
 ## Install
 

@@ -30,6 +30,15 @@ How much goes into `%LOCALAPPDATA%\fz-maximize\fz-maximize.log`: `error`, `warn`
 `info`, `debug` or `trace`. `info` logs one line per zone maximize; use `debug` to find
 out why a maximize was left alone.
 
+#### Check for updates once a day
+
+<small><code>check_for_updates</code> · default off</small>
+
+Asks GitHub once a day whether there's a newer release, and offers it with a
+notification: install now, at a time you pick, remind later, or skip that version.
+fz-maximize asks the first time it starts. **Check for updates now** in the tray menu
+works either way. See [Privacy](/fz-maximize/privacy/#update-checks) for what's sent.
+
 ## Behavior
 
 #### Maximizing a window that already fills its zone
@@ -197,6 +206,7 @@ Every key is optional; these are the defaults:
 
 ```toml
 log_level = "info"
+check_for_updates = false
 
 already_in_zone = "restore"
 snap_on_drag_maximize = true

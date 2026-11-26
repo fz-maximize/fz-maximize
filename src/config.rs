@@ -120,6 +120,9 @@ pub struct Config {
     pub on_fancyzones_mismatch: MismatchAction,
     /// error | warn | info | debug | trace. The FZM_LOG environment variable overrides it.
     pub log_level: String,
+    /// Check GitHub once a day for a new release (off unless the user turns it on; they
+    /// are asked once).
+    pub check_for_updates: bool,
 }
 
 impl Default for Config {
@@ -146,6 +149,7 @@ impl Default for Config {
             fancyzones_check: true,
             on_fancyzones_mismatch: MismatchAction::Warn,
             log_level: "info".into(),
+            check_for_updates: false,
         }
     }
 }
@@ -160,6 +164,10 @@ pub const TEMPLATE: &str = r#"# fz-maximize configuration. All keys are optional
 
 # error | warn | info | debug | trace
 log_level = "info"
+
+# Check GitHub once a day for a new version and offer to install it. Off unless you
+# turn it on (fz-maximize asks once). Tray -> "Check for updates now" works either way.
+check_for_updates = false
 
 # ---- Behavior --------------------------------------------------------------------
 
@@ -385,6 +393,7 @@ mod tests {
             fancyzones_check: false,
             on_fancyzones_mismatch: MismatchAction::Native,
             log_level: "debug".into(),
+            check_for_updates: true,
         };
         let text = render(&cfg);
         assert_eq!(parse(&text).unwrap(), cfg);

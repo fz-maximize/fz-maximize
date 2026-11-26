@@ -124,6 +124,7 @@ const ID_CHECK: i32 = 140;
 const ID_MISMATCH: i32 = 141;
 const ID_AUTOSTART: i32 = 150;
 const ID_LOGLEVEL: i32 = 151;
+const ID_UPDATES: i32 = 152;
 /// Hint labels (drawn in grey) use ids in this range.
 const ID_HINT_FIRST: i32 = 900;
 
@@ -265,11 +266,6 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
 
     // ---- left column ----
     b.column(0);
-    b.group("General");
-    b.check(ID_AUTOSTART, "Start with Windows");
-    b.labeled("Log detail:", ID_LOGLEVEL, Ctl::Combo, 120);
-    b.end_group();
-
     b.group("Behavior");
     b.labeled(
         "Maximizing a window that already fills its zone:",
@@ -318,6 +314,12 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
 
     // ---- right column ----
     b.column(1);
+    b.group("General");
+    b.check(ID_AUTOSTART, "Start with Windows");
+    b.check(ID_UPDATES, "Check for updates once a day");
+    b.labeled("Log detail:", ID_LOGLEVEL, Ctl::Combo, 120);
+    b.end_group();
+
     b.group("Exclusions");
     b.labeled(
         "Only monitors at least this wide (width / height, 0 = all):",
@@ -393,11 +395,11 @@ thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
 }
 
-fn scale(v: i32, dpi: u32) -> i32 {
+pub(crate) fn scale(v: i32, dpi: u32) -> i32 {
     (v as i64 * dpi as i64 / 96) as i32
 }
 
-fn make_font(dpi: u32) -> HFONT {
+pub(crate) fn make_font(dpi: u32) -> HFONT {
     let mut ncm = NONCLIENTMETRICSW {
         cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
         ..Default::default()
@@ -597,6 +599,7 @@ fn fill(hwnd: HWND, ctx: &Context) {
     set_check(hwnd, ID_FZ_REQUIRE, c.require_fancyzones_enabled);
     set_check(hwnd, ID_CHECK, c.fancyzones_check);
     set_check(hwnd, ID_AUTOSTART, ctx.autostart);
+    set_check(hwnd, ID_UPDATES, c.check_for_updates);
     set_text(hwnd, ID_ASPECT, &format!("{}", c.min_aspect_ratio));
     set_text(hwnd, ID_MONITORS, &list_to_lines(&c.excluded_monitors));
     set_text(hwnd, ID_APPS, &list_to_lines(&c.excluded_apps));
@@ -643,6 +646,7 @@ fn read(hwnd: HWND) -> Result<(Config, bool), String> {
         fancyzones_check: checked(hwnd, ID_CHECK),
         on_fancyzones_mismatch: MISMATCH[combo_index(hwnd, ID_MISMATCH).min(MISMATCH.len() - 1)].1,
         log_level: LOG_LEVELS[combo_index(hwnd, ID_LOGLEVEL).min(LOG_LEVELS.len() - 1)].to_string(),
+        check_for_updates: checked(hwnd, ID_UPDATES),
     };
     cfg.validate()?;
     Ok((cfg, checked(hwnd, ID_AUTOSTART)))

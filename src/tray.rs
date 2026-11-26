@@ -27,17 +27,21 @@ pub enum Command {
     OpenConfig,
     OpenLogs,
     ToggleAutostart,
+    CheckUpdates,
+    ShowUpdate,
     Exit,
 }
 
 impl Command {
-    const ALL: [Command; 7] = [
+    const ALL: [Command; 9] = [
         Command::Settings,
         Command::TogglePause,
         Command::Reload,
         Command::OpenConfig,
         Command::OpenLogs,
         Command::ToggleAutostart,
+        Command::CheckUpdates,
+        Command::ShowUpdate,
         Command::Exit,
     ];
 
@@ -56,6 +60,8 @@ pub struct MenuState {
     pub autostart: bool,
     pub status: String,
     pub check: String,
+    /// "Update to 0.3.5..." when an update is available (opens the update window).
+    pub update: Option<String>,
 }
 
 pub struct Tray {
@@ -159,6 +165,9 @@ pub fn show_menu(hwnd: HWND, state: &MenuState) -> Option<Command> {
         add(MF_STRING | MF_GRAYED, None, &state.check);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         add(MF_STRING, Some(Command::Settings), "&Settings...");
+        if let Some(label) = &state.update {
+            add(MF_STRING, Some(Command::ShowUpdate), label);
+        }
         add(
             MF_STRING,
             Some(Command::TogglePause),
@@ -173,6 +182,7 @@ pub fn show_menu(hwnd: HWND, state: &MenuState) -> Option<Command> {
             MF_STRING
         };
         add(auto_flags, Some(Command::ToggleAutostart), "Start with &Windows");
+        add(MF_STRING, Some(Command::CheckUpdates), "Check for &updates now");
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         add(MF_STRING, Some(Command::Exit), "E&xit");
 

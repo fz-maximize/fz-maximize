@@ -22,6 +22,8 @@ mod policy;
 mod preempt;
 mod settings;
 mod tray;
+mod update;
+mod update_dialog;
 mod vdesktop;
 mod win;
 mod window;
@@ -75,6 +77,8 @@ enum Cmd {
 struct Args {
     cmd: Cmd,
     config: Option<PathBuf>,
+    /// Started by a portable update: the process id of the copy it replaces.
+    after_update: Option<u32>,
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
@@ -82,6 +86,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
     let mut json = false;
     let mut cmd: Option<Cmd> = None;
     let mut config = None;
+    let mut after_update = None;
     let mut it = args.into_iter();
     let set = |c: Cmd, cmd: &mut Option<Cmd>| -> Result<(), String> {
         if cmd.is_some() {
@@ -103,6 +108,13 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
                 Cmd::Autostart(it.next().ok_or("--autostart needs on|off|status")?),
                 &mut cmd,
             )?,
+            "--after-update" => {
+                after_update = Some(
+                    it.next()
+                        .and_then(|p| p.parse().ok())
+                        .ok_or("--after-update needs a process id")?,
+                )
+            }
             "--version" | "-V" => set(Cmd::Version, &mut cmd)?,
             "--help" | "-h" | "/?" => set(Cmd::Help, &mut cmd)?,
             other => return Err(format!("unknown argument '{other}'")),
@@ -113,7 +125,11 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
         Some(c) => c,
         None => Cmd::Run { console },
     };
-    Ok(Args { cmd, config })
+    Ok(Args {
+        cmd,
+        config,
+        after_update,
+    })
 }
 
 /// In release builds (GUI subsystem) attach to the parent console so CLI output shows,
@@ -261,7 +277,13 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Cmd::Run { console } => run(config_path, console),
+        Cmd::Run { console } => {
+            if let Some(pid) = args.after_update {
+                // The old copy exits right after starting this one; let it go first.
+                update::finish_portable_update(pid);
+            }
+            run(config_path, console)
+        }
     }
 }
 

@@ -83,6 +83,29 @@ The release binary is a GUI-subsystem app, so in PowerShell pipe its output to s
   serial read from the registry. Windows sometimes can't report a monitor's identity
   (seen on hybrid-GPU laptops), so the last known identity per display is remembered in
   `%LOCALAPPDATA%\fz-maximize\monitors.json`.
+* **Updates** (`update.rs`, `update_dialog.rs`; `check_for_updates`, off by default, asked
+  once). Once a day a worker thread asks GitHub's API for the latest release (WinHTTP, so
+  proxies work); a newer one is offered with a notification, and the update window installs
+  it now, schedules it, reminds later or skips it (`update.json` keeps that state).
+  Installing downloads the matching release asset (only from this repo's release downloads),
+  checks its SHA-256 against `SHA256SUMS.txt`, then runs the installer silently (it closes
+  and restarts the app) or, for a portable copy, swaps the exe (`fz-maximize.exe.old`) and
+  starts the new one with `--after-update <pid>`. Development builds (under `target\`) are
+  only told about new versions.
+
+### Testing updates
+
+There's no newer release to update to while developing, so the update check can pretend
+to be an older version: `FZM_UPDATE_TEST_CURRENT=0.3.0`. Two diagnostic tests use it:
+
+* `cargo test --release update::live -- --ignored`: asks GitHub for the latest release and
+  downloads and verifies its installer.
+* `cargo test --release --test e2e update_flow -- --ignored --nocapture`: in an isolated
+  profile (temporary `LOCALAPPDATA` and config), answers the first-start question, clicks
+  the update notification and presses one button of the update window
+  (`FZM_E2E_UPDATE_PRESS` = `remind` | `skip` | `at` | `install`). With
+  `FZM_E2E_UPDATE_EXE` pointing at a copy in an install folder (installed per-user with a
+  real release's installer) or a plain folder, `install` exercises a real update.
 
 ## Staying in sync with FancyZones
 
@@ -125,6 +148,8 @@ src/
   vdesktop.rs        virtual desktop ids
   window.rs          window eligibility, placement, border compensation
   settings.rs        settings window (native Win32, DPI-aware)
+  update.rs          update check, download + checksum, install (pure logic unit tested)
+  update_dialog.rs   the update window (install now / at a time / remind / skip)
   hooks.rs tray.rs autostart.rs logging.rs win.rs
 tests/
   e2e.rs             live desktop tests (ignored by default; `task e2e`)

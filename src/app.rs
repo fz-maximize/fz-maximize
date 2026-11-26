@@ -35,7 +35,7 @@ use crate::monitors::{LiveMonitor, MonitorCache};
 use crate::preempt::{self, InputHooks, Kind, WM_APP_PREEMPT};
 use crate::tray::{self, Command, MenuState, Tray};
 use crate::win::{hwnd_from, hwnd_key, point_from};
-use crate::{autostart, logging, policy, settings, vdesktop, window};
+use crate::{autostart, logging, policy, settings, update, update_dialog, vdesktop, window};
 
 pub const WINDOW_CLASS: PCWSTR = w!("fz-maximize.hidden-window");
 const WM_APP_TRAY: u32 = WM_APP + 1;
@@ -43,6 +43,15 @@ const WM_APP_TRAY: u32 = WM_APP + 1;
 pub const WM_APP_OPEN_SETTINGS: u32 = WM_APP + 4;
 const PRUNE_THRESHOLD: usize = 2048;
 const DRIFT_TIMER_ID: usize = 7;
+const UPDATE_TIMER_ID: usize = 8;
+/// Update worker results (UpdateMsg in lParam) and the one-time question.
+const WM_APP_UPDATE: u32 = WM_APP + 20;
+const WM_APP_UPDATE_ASK: u32 = WM_APP + 21;
+/// The first update tick after start, then one every UPDATE_TICK.
+const UPDATE_FIRST_TICK: Duration = Duration::from_secs(20);
+const UPDATE_TICK: Duration = Duration::from_secs(15 * 60);
+/// A tray notification was clicked (NOTIFYICON_VERSION_4).
+const NIN_BALLOONUSERCLICK: u32 = 0x0405;
 /// Give FancyZones this long after a drop to place + stamp the window.
 const DRIFT_SETTLE: Duration = Duration::from_millis(350);
 /// Stop waiting for a FancyZones placement after this long.
@@ -100,6 +109,12 @@ pub struct App {
     probes: HashMap<isize, DragProbe>,
     input_hooks: Option<InputHooks>,
     animator: Option<Animator>,
+    update: update::UpdateState,
+    update_path: Option<PathBuf>,
+    /// A check or an install is running on a worker thread.
+    update_busy: bool,
+    /// The last notification shown was about an update (clicking it opens the window).
+    update_notice: bool,
 }
 
 impl App {
@@ -547,6 +562,7 @@ impl App {
             } else {
                 self.summary()
             },
+            update: self.update_menu_label(),
             check: if self.config.fancyzones_check {
                 self.drift.state.summary()
             } else {
@@ -589,6 +605,8 @@ impl App {
                     tracing::error!(error = %e, "could not change autostart");
                 }
             }
+            Command::CheckUpdates => self.start_update_check(true),
+            Command::ShowUpdate => self.open_update_window(false),
             Command::Exit => unsafe {
                 let _ = DestroyWindow(self.hwnd);
             },
@@ -973,6 +991,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 WM_LBUTTONDBLCLK => {
                     with_app(|a| a.run_command(Command::TogglePause));
                 }
+                NIN_BALLOONUSERCLICK => {
+                    with_app(|a| {
+                        if std::mem::take(&mut a.update_notice) {
+                            a.open_update_window(false);
+                        }
+                    });
+                }
                 _ => {}
             }
             LRESULT(0)
@@ -985,6 +1010,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             if let Some(kind) = Kind::from_raw(lparam.0) {
                 with_app(|a| a.on_intercepted(hwnd_from(wparam.0 as isize), kind));
             }
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == UPDATE_TIMER_ID => {
+            with_app(|a| a.update_tick());
+            LRESULT(0)
+        }
+        WM_APP_UPDATE => {
+            // SAFETY: posted by post_update_msg with a leaked Box<UpdateMsg>.
+            let msg = unsafe { Box::from_raw(lparam.0 as *mut UpdateMsg) };
+            with_app(|a| a.on_update_msg(*msg));
+            LRESULT(0)
+        }
+        WM_APP_UPDATE_ASK => {
+            ask_about_updates();
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == DRIFT_TIMER_ID => {
@@ -1094,6 +1133,13 @@ pub fn run(config_path: PathBuf, cfg: Config, config_error: Option<String>) -> R
         probes: HashMap::new(),
         input_hooks: None,
         animator: None,
+        update: update_state_path()
+            .as_deref()
+            .map(update::UpdateState::load)
+            .unwrap_or_default(),
+        update_path: update_state_path(),
+        update_busy: false,
+        update_notice: false,
     };
     APP.with(|cell| *cell.borrow_mut() = Some(app));
 
@@ -1114,9 +1160,11 @@ pub fn run(config_path: PathBuf, cfg: Config, config_error: Option<String>) -> R
         a.seed_existing_windows();
         let summary = a.summary();
         tracing::info!(%summary, "started");
+        a.update_on_start();
     });
 
     settings::set_apply_handler(apply_settings);
+    update_dialog::set_handler(on_update_choice);
     let hooks = Hooks::install(on_win_event).context("SetWinEventHook")?;
 
     let mut msg = MSG::default();
@@ -1125,7 +1173,7 @@ pub fn run(config_path: PathBuf, cfg: Config, config_error: Option<String>) -> R
         if r.0 == 0 || r.0 == -1 {
             break;
         }
-        if settings::dialog_message(&msg) {
+        if settings::dialog_message(&msg) || update_dialog::dialog_message(&msg) {
             continue;
         }
         unsafe {
@@ -1144,6 +1192,407 @@ pub fn run(config_path: PathBuf, cfg: Config, config_error: Option<String>) -> R
         }
     });
     Ok(())
+}
+
+// ---------------------------------------------------------------------------------------
+// Updates (see update.rs and update_dialog.rs)
+// ---------------------------------------------------------------------------------------
+
+/// Results from the update worker threads, posted to the main window.
+enum UpdateMsg {
+    Checked {
+        manual: bool,
+        result: Result<Option<update::Release>, String>,
+    },
+    InstallStarted(update::Started),
+    InstallFailed(String),
+}
+
+fn post_update_msg(hwnd: isize, msg: UpdateMsg) {
+    let raw = Box::into_raw(Box::new(msg));
+    let posted = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+            Some(hwnd_from(hwnd)),
+            WM_APP_UPDATE,
+            WPARAM(0),
+            LPARAM(raw as isize),
+        )
+    };
+    if posted.is_err() {
+        // SAFETY: not posted, so still ours.
+        drop(unsafe { Box::from_raw(raw) });
+    }
+}
+
+/// `%LOCALAPPDATA%\fz-maximize\update.json`
+fn update_state_path() -> Option<PathBuf> {
+    logging::log_dir().map(|d| d.join("update.json"))
+}
+
+/// "3:00 AM" (in the user's time format) for a time `secs_ahead` seconds from now.
+fn local_time_label(secs_ahead: u64) -> String {
+    use windows::Win32::Foundation::SYSTEMTIME;
+    use windows::Win32::Globalization::{GetTimeFormatEx, TIME_NOSECONDS};
+    let local = (u64::from(update::local_seconds_of_day()) + secs_ahead) % 86_400;
+    let st = SYSTEMTIME {
+        wYear: 2000,
+        wMonth: 1,
+        wDay: 1,
+        wHour: (local / 3600) as u16,
+        wMinute: ((local / 60) % 60) as u16,
+        ..Default::default()
+    };
+    let mut buf = [0u16; 64];
+    let n = unsafe {
+        GetTimeFormatEx(
+            PCWSTR::null(),
+            TIME_NOSECONDS,
+            Some(&st),
+            PCWSTR::null(),
+            Some(&mut buf),
+        )
+    };
+    if n > 1 {
+        String::from_utf16_lossy(&buf[..n as usize - 1])
+    } else {
+        format!("{:02}:{:02}", st.wHour, st.wMinute)
+    }
+}
+
+impl App {
+    fn save_update_state(&self) {
+        if let Some(path) = &self.update_path
+            && let Err(e) = self.update.save(path)
+        {
+            tracing::warn!(error = %e, "could not save update state");
+        }
+    }
+
+    /// At start: report a finished update, schedule the first check, and ask (once)
+    /// whether to check for updates at all.
+    fn update_on_start(&mut self) {
+        if let Some(v) = self.update.take_install_result() {
+            let current = update::Version::current().to_string();
+            if let Some(t) = &self.tray {
+                if v == current {
+                    tracing::info!(version = %v, "updated");
+                    t.notify(
+                        "fz-maximize updated",
+                        &format!("You're now running fz-maximize {v}."),
+                        false,
+                    );
+                } else {
+                    tracing::warn!(wanted = %v, running = %current, "update didn't complete");
+                    t.notify(
+                        "fz-maximize update didn't complete",
+                        &format!("Still running {current}; {v} wasn't installed. Details are in the log."),
+                        true,
+                    );
+                }
+            }
+            if v == current {
+                self.update.available = None;
+            }
+            self.save_update_state();
+        }
+        unsafe {
+            SetTimer(
+                Some(self.hwnd),
+                UPDATE_TIMER_ID,
+                UPDATE_FIRST_TICK.as_millis() as u32,
+                None,
+            );
+        }
+        if !self.update.asked {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                    Some(self.hwnd),
+                    WM_APP_UPDATE_ASK,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        }
+    }
+
+    /// The user's answer to "Check for updates?" (asked once).
+    fn set_update_answer(&mut self, check: bool) {
+        self.update.asked = true;
+        self.save_update_state();
+        tracing::info!(check, "asked whether to check for updates");
+        if check != self.config.check_for_updates {
+            let mut cfg = self.config.clone();
+            cfg.check_for_updates = check;
+            if let Err(e) = config::save(&self.config_path, &cfg) {
+                tracing::warn!(error = %e, "could not save the update setting");
+            }
+            self.apply_config(cfg);
+        }
+        if check {
+            self.start_update_check(false);
+        }
+    }
+
+    /// Every few minutes: start a scheduled install, repeat a reminder whose time has
+    /// come, and check once a day (when checking is on).
+    fn update_tick(&mut self) {
+        if !self.update_busy {
+            let now = update::unix_now();
+            if let Some(v) = self.update.due_install(now).map(str::to_string) {
+                tracing::info!(version = %v, "scheduled update is due");
+                self.start_install(&v, false);
+            } else {
+                if let Some(v) = self.update.take_due_reminder(now) {
+                    self.save_update_state();
+                    if self.update.offered().is_some_and(|o| o.version == v) {
+                        self.notify_update(&v);
+                    }
+                }
+                if self.config.check_for_updates && self.update.check_due(now) {
+                    self.start_update_check(false);
+                }
+            }
+        }
+        self.arm_update_timer();
+    }
+
+    /// The next tick: in `UPDATE_TICK`, or sooner when a scheduled install or a reminder
+    /// is due before then, so "install at 3:00" starts at 3:00.
+    fn arm_update_timer(&self) {
+        let now = update::unix_now();
+        let next_due = [&self.update.scheduled, &self.update.remind]
+            .into_iter()
+            .flatten()
+            .map(|t| t.at_unix.saturating_sub(now))
+            .min();
+        let secs = next_due.map_or(UPDATE_TICK.as_secs(), |d| d.clamp(5, UPDATE_TICK.as_secs()));
+        unsafe {
+            SetTimer(Some(self.hwnd), UPDATE_TIMER_ID, (secs * 1000) as u32, None);
+        }
+    }
+
+    fn start_update_check(&mut self, manual: bool) {
+        if self.update_busy {
+            return;
+        }
+        self.update_busy = true;
+        let hwnd = self.hwnd.0 as isize;
+        tracing::debug!(manual, "checking for updates");
+        std::thread::spawn(move || {
+            let result = update::fetch_latest();
+            post_update_msg(hwnd, UpdateMsg::Checked { manual, result });
+        });
+    }
+
+    fn start_install(&mut self, version: &str, interactive: bool) {
+        if self.update_busy {
+            return;
+        }
+        self.update_busy = true;
+        // Remember it before anything starts: the installer closes this copy.
+        self.update.started_install(version);
+        self.save_update_state();
+        let hwnd = self.hwnd.0 as isize;
+        let wanted = update::Version::parse(version);
+        tracing::info!(version, interactive, "installing update");
+        if let Some(t) = &self.tray {
+            t.notify("fz-maximize", &format!("Downloading fz-maximize {version}..."), false);
+        }
+        std::thread::spawn(move || {
+            let msg = match update::fetch_latest() {
+                Ok(Some(r)) if wanted.is_some_and(|w| r.version >= w) => match update::install(&r, interactive) {
+                    Ok(started) => UpdateMsg::InstallStarted(started),
+                    Err(e) => UpdateMsg::InstallFailed(e),
+                },
+                Ok(_) => UpdateMsg::InstallFailed("that version is no longer the latest release".into()),
+                Err(e) => UpdateMsg::InstallFailed(e),
+            };
+            post_update_msg(hwnd, msg);
+        });
+    }
+
+    fn on_update_msg(&mut self, msg: UpdateMsg) {
+        self.update_busy = false;
+        match msg {
+            UpdateMsg::Checked {
+                manual,
+                result: Ok(release),
+            } => {
+                let current = update::Version::current();
+                let found = self.update.found(release.as_ref(), current, update::unix_now());
+                self.save_update_state();
+                tracing::info!(latest = ?release.as_ref().map(|r| r.version.to_string()), ?found, "update check");
+                match (found, manual) {
+                    (update::Found::Notify, false) => {
+                        if let Some(v) = self.update.offered().map(|o| o.version.clone()) {
+                            self.notify_update(&v);
+                        }
+                    }
+                    (update::Found::UpToDate, true) => {
+                        if let Some(t) = &self.tray {
+                            t.notify(
+                                "fz-maximize is up to date",
+                                &format!("{current} is the latest version."),
+                                false,
+                            );
+                        }
+                    }
+                    // Asked for, so show it even if it was snoozed, scheduled or skipped.
+                    (_, true) => self.open_update_window(true),
+                    _ => {}
+                }
+            }
+            UpdateMsg::Checked { manual, result: Err(e) } => {
+                tracing::warn!(error = %e, "update check failed");
+                if manual && let Some(t) = &self.tray {
+                    t.notify("Couldn't check for updates", &e, true);
+                }
+            }
+            UpdateMsg::InstallStarted(update::Started::Installer) => {
+                tracing::info!("update installer started; it restarts fz-maximize");
+            }
+            UpdateMsg::InstallStarted(update::Started::Restarting) => {
+                tracing::info!("portable update in place; restarting");
+                unsafe {
+                    let _ = DestroyWindow(self.hwnd);
+                }
+            }
+            UpdateMsg::InstallFailed(e) => {
+                tracing::warn!(error = %e, "update failed");
+                self.update.installing = None;
+                self.save_update_state();
+                if let Some(t) = &self.tray {
+                    t.notify("fz-maximize update failed", &e, true);
+                }
+            }
+        }
+    }
+
+    fn notify_update(&mut self, version: &str) {
+        if let Some(t) = &self.tray {
+            t.notify(
+                &format!("fz-maximize {version} is available"),
+                "Click to install it now or later, or to be reminded.",
+                false,
+            );
+            self.update_notice = true;
+        }
+    }
+
+    /// The update window for the available version. `even_skipped`: after "Check for
+    /// updates now", a skipped version is offered again.
+    fn open_update_window(&mut self, even_skipped: bool) {
+        let pending = if even_skipped {
+            self.update.available.clone()
+        } else {
+            self.update.offered().cloned()
+        };
+        let Some(p) = pending else {
+            return;
+        };
+        let now = update::unix_now();
+        let scheduled = self
+            .update
+            .scheduled
+            .as_ref()
+            .filter(|s| s.version == p.version)
+            .map(|s| format!("for {}", local_time_label(s.at_unix.saturating_sub(now))));
+        update_dialog::open(update_dialog::Offer {
+            version: p.version,
+            current: update::Version::current().to_string(),
+            notes_url: p.notes_url,
+            can_install: update::install_kind() != update::InstallKind::Dev,
+            scheduled,
+        });
+    }
+
+    fn on_update_choice(&mut self, version: &str, choice: update_dialog::Choice) {
+        use update_dialog::Choice;
+        let now = update::unix_now();
+        tracing::info!(version, ?choice, "update choice");
+        match choice {
+            Choice::InstallNow => self.start_install(version, true),
+            Choice::InstallAt { minute_of_day } => {
+                let ahead = update::seconds_until(update::local_seconds_of_day(), minute_of_day);
+                self.update.schedule(version, now + ahead);
+                self.save_update_state();
+                if let Some(t) = &self.tray {
+                    t.notify(
+                        "fz-maximize update scheduled",
+                        &format!(
+                            "{version} will be installed at {} (or the next time this PC is on).",
+                            local_time_label(ahead)
+                        ),
+                        false,
+                    );
+                }
+            }
+            Choice::RemindIn { days } => {
+                self.update.remind_in(version, days, now);
+                self.save_update_state();
+            }
+            Choice::Skip => {
+                self.update.skip(version);
+                self.save_update_state();
+            }
+        }
+        self.arm_update_timer();
+    }
+
+    fn update_menu_label(&self) -> Option<String> {
+        let p = self.update.offered()?;
+        let now = update::unix_now();
+        Some(match &self.update.scheduled {
+            Some(s) if s.version == p.version => format!(
+                "Update to {} at {}...",
+                p.version,
+                local_time_label(s.at_unix.saturating_sub(now))
+            ),
+            _ => format!("Update to {}...", p.version),
+        })
+    }
+}
+
+/// "Check for updates?" — asked once, without holding the app (the message box runs
+/// its own message loop, which keeps handling events).
+fn ask_about_updates() {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IDYES, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MessageBoxW,
+    };
+    let text = w!("Check for updates automatically?\n\n\
+         fz-maximize can check GitHub once a day for a new version, then let you install it now or \
+         later. Nothing about you or your PC is sent; GitHub sees an ordinary web request.\n\n\
+         You can change this any time in Settings > General.");
+    // Topmost: at sign-in Windows may not let a background app take the foreground, and
+    // the question would otherwise open behind other windows.
+    let flags = MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST;
+    let answer = unsafe { MessageBoxW(None, text, w!("fz-maximize"), flags) };
+    with_app(|a| a.set_update_answer(answer == IDYES));
+}
+
+/// Update-window handler (called from its message handling, with no app borrow held).
+fn on_update_choice(version: &str, choice: update_dialog::Choice) {
+    with_app(|a| a.on_update_choice(version, choice));
+}
+
+/// Open a web page in the default browser.
+pub fn open_url(url: &str) {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    if !url.starts_with("https://") {
+        return;
+    }
+    let url = windows::core::HSTRING::from(url);
+    unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(url.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------------

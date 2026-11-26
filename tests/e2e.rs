@@ -2026,3 +2026,137 @@ fn win_key_prepare_vs_start_menu() {
         }
     }
 }
+
+/// Drives the update flow against the real latest GitHub release, in an isolated
+/// profile (a temporary LOCALAPPDATA and config): fz-maximize pretends to be an old
+/// version (`FZM_UPDATE_TEST_CURRENT`), is asked whether to check for updates (Yes),
+/// finds the release, and its notification is clicked; then one button of the update
+/// window is pressed. Screenshots of both windows go to %TEMP%.
+///
+/// Environment: `FZM_E2E_UPDATE_EXE` runs another copy (e.g. one placed in an install
+/// folder, to test a real install); `FZM_E2E_UPDATE_PRESS` = remind (default) | skip |
+/// at | install.
+#[test]
+#[ignore = "diagnostic: network; drives the update windows"]
+fn update_flow() {
+    use windows::Win32::UI::WindowsAndMessaging::{BM_CLICK, GetDlgItem, SendMessageW};
+    let exe = std::env::var("FZM_E2E_UPDATE_EXE").unwrap_or_else(|_| EXE.to_string());
+    let press = std::env::var("FZM_E2E_UPDATE_PRESS").unwrap_or_else(|_| "remind".into());
+    // Physical pixels, so window rects match what the screen capture reads.
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+    let _ = Command::new(EXE).arg("--quit").output();
+    std::thread::sleep(Duration::from_millis(800));
+    let profile = std::env::temp_dir().join(format!("fzm-update-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&profile);
+    std::fs::create_dir_all(&profile).unwrap();
+    let config = profile.join("config.toml");
+    std::fs::write(&config, "").unwrap();
+    let log = std::env::temp_dir().join("fz-maximize-e2e-update.log");
+    let mut child = Command::new(&exe)
+        .args(["--console", "--config"])
+        .arg(&config)
+        .env("LOCALAPPDATA", &profile)
+        .env("FZM_UPDATE_TEST_CURRENT", "0.3.0")
+        .env("FZM_LOG", "debug")
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .expect("start fz-maximize");
+    let log_has = |s: &str| std::fs::read_to_string(&log).is_ok_and(|t| t.contains(s));
+
+    // 1. The one-time question.
+    let find_ask = || {
+        let mut found = None;
+        for h in all_top_level_windows() {
+            if unsafe { IsWindowVisible(h) }.as_bool() && class_of(h) == "#32770" && window_text(h) == "fz-maximize" {
+                found = Some(h);
+            }
+        }
+        found
+    };
+    assert!(
+        wait_until(Duration::from_secs(10), || find_ask().is_some()),
+        "no 'check for updates?' question"
+    );
+    let ask = find_ask().unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    capture_bmp(
+        &window_rect(ask),
+        &std::env::temp_dir().join("fz-maximize-update-ask.bmp"),
+    );
+    // IDYES = 6.
+    let yes = unsafe { GetDlgItem(Some(ask), 6) }.expect("Yes button");
+    unsafe {
+        SendMessageW(yes, BM_CLICK, None, None);
+    }
+
+    // 2. The check finds the latest release; click its notification.
+    assert!(
+        wait_until(Duration::from_secs(20), || log_has("update check")),
+        "no update check in {}",
+        log.display()
+    );
+    assert!(log_has("Notify"), "the release wasn't offered: see {}", log.display());
+    let hidden = unsafe { FindWindowW(w!("fz-maximize.hidden-window"), None) }.expect("app window");
+    // WM_APP_TRAY with NIN_BALLOONUSERCLICK.
+    unsafe {
+        let _ = PostMessageW(Some(hidden), 0x8000 + 1, WPARAM(0), LPARAM(0x0405));
+    }
+    let find_update = || unsafe { FindWindowW(w!("fz-maximize.update"), None) }.ok();
+    assert!(
+        wait_until(Duration::from_secs(5), || find_update().is_some()),
+        "no update window"
+    );
+    let win = find_update().unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    capture_bmp(
+        &window_rect(win),
+        &std::env::temp_dir().join("fz-maximize-update-window.bmp"),
+    );
+
+    // 3. Press a button: install now (1), at (10), remind (12) or skip (14).
+    let id = match press.as_str() {
+        "install" => 1,
+        "at" => 10,
+        "skip" => 14,
+        _ => 12,
+    };
+    let button = unsafe { GetDlgItem(Some(win), id) }.expect("button");
+    unsafe {
+        SendMessageW(button, BM_CLICK, None, None);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let state = std::fs::read_to_string(profile.join("fz-maximize").join("update.json")).unwrap_or_default();
+    eprintln!("pressed {press}; update.json:\n{state}");
+    if press != "install" {
+        let _ = Command::new(&exe).arg("--quit").output();
+    }
+    let _ = wait_until(Duration::from_secs(60), || child.try_wait().ok().flatten().is_some());
+    let _ = child.kill();
+    for line in std::fs::read_to_string(&log).unwrap_or_default().lines() {
+        if line.contains("update") || line.contains("asked") {
+            eprintln!("  {}", line.split_once("Z ").map_or(line, |(_, r)| r));
+        }
+    }
+}
+
+fn all_top_level_windows() -> Vec<HWND> {
+    unsafe extern "system" fn cb(h: HWND, data: LPARAM) -> BOOL {
+        unsafe { &mut *(data.0 as *mut Vec<HWND>) }.push(h);
+        BOOL(1)
+    }
+    let mut v = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(cb), LPARAM(&mut v as *mut _ as isize));
+    }
+    v
+}
+
+fn window_text(h: HWND) -> String {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowTextW;
+    let mut buf = [0u16; 256];
+    let n = unsafe { GetWindowTextW(h, &mut buf) };
+    String::from_utf16_lossy(&buf[..n.max(0) as usize])
+}

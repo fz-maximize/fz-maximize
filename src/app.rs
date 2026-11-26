@@ -228,6 +228,10 @@ impl App {
             self.drag_restore(hwnd, now);
             return;
         }
+        if kind == Kind::Prepare {
+            self.prepare_animation(hwnd);
+            return;
+        }
         if kind == Kind::Bypassed {
             // Windows is about to maximize natively; make sure we leave it alone even if
             // the modifier is released before the maximize event reaches us.
@@ -311,6 +315,85 @@ impl App {
         window::restore_to(hwnd, target, same_dpi)
     }
 
+    /// The zones a maximize of `hwnd` would use, with its exe name and monitor; `None`
+    /// when it gets the normal maximize (logged, with the reason, when `log` is set).
+    fn zones_for(&mut self, hwnd: HWND, log: bool) -> Option<(String, LiveMonitor, Resolution)> {
+        let key = hwnd_key(hwnd);
+        let native = |exe: &str, reason: &dyn std::fmt::Display| {
+            if log {
+                tracing::debug!(hwnd = key, exe, "native maximize: {reason}");
+            }
+        };
+        self.store.refresh();
+        let fz = self.store.data();
+
+        if let Err(why) = window::check_eligible(hwnd, fz.settings.allow_child_window_snap) {
+            native("", &NativeReason::NotEligible(why));
+            return None;
+        }
+        let path = window::process_path(hwnd);
+        let exe = exe_name(&path);
+        if window::is_system_app(&path.to_uppercase()) {
+            native(&exe, &"system app");
+            return None;
+        }
+        let title = window::title(hwnd);
+        let excluded = self.excluded_lists(&fz.settings.excluded_apps);
+        if is_app_excluded(&path, &title, &excluded) {
+            native(&exe, &NativeReason::ExcludedApp);
+            return None;
+        }
+
+        let Some(mon) = self.monitors.for_window(hwnd) else {
+            native(&exe, &"monitor unknown");
+            return None;
+        };
+        let window_vd = vdesktop::window_desktop(hwnd);
+        let desktops = desktop_candidates(
+            window_vd.as_deref(),
+            vdesktop::registry_current().as_deref(),
+            fz.last_used_vd,
+        );
+        let (resolution, verdict) = policy::monitor_zones(&self.config, &fz, &mon.desc, &desktops);
+        let resolution = match (resolution, verdict) {
+            (Some(r), Ok(())) => r,
+            (_, Err(reason)) => {
+                native(&exe, &format_args!("{reason} (monitor {})", mon.desc.id.device.id));
+                return None;
+            }
+            (None, Ok(())) => return None,
+        };
+        if self.config.on_fancyzones_mismatch == MismatchAction::Native
+            && self.drift.is_confirmed(&drift_key(&mon.desc, Some(&resolution)))
+        {
+            native(&exe, &NativeReason::FancyZonesDisagree);
+            return None;
+        }
+        Some((exe, mon, resolution))
+    }
+
+    /// A maximize gesture has begun (the maximize button is pressed, or a title-bar click
+    /// may become a double-click). If it would be animated, have the animation thread
+    /// copy the window's picture now, so the animation can start the moment the gesture
+    /// completes. Costs one copy of the window when no maximize follows.
+    fn prepare_animation(&mut self, hwnd: HWND) {
+        if !self.config.animate_maximize
+            || !animate::system_animations_enabled()
+            || !unsafe { IsWindow(Some(hwnd)) }.as_bool()
+            || window::is_zoomed(hwnd)
+            || window::is_iconic(hwnd)
+            || self.zones_for(hwnd, false).is_none()
+        {
+            return;
+        }
+        if self.animator.is_none() {
+            self.animator = Animator::start();
+        }
+        if let Some(animator) = &self.animator {
+            animator.prepare(hwnd_key(hwnd));
+        }
+    }
+
     /// Shared decision and placement. `normal` is the window rect to decide from (its
     /// pre-maximize rect). Returns true when the window was placed (zone or toggle).
     fn redirect(
@@ -323,51 +406,9 @@ impl App {
         now: Instant,
     ) -> bool {
         let key = hwnd_key(hwnd);
-        self.store.refresh();
-        let fz = self.store.data();
-
-        if let Err(why) = window::check_eligible(hwnd, fz.settings.allow_child_window_snap) {
-            tracing::debug!(hwnd = key, "native maximize: {}", NativeReason::NotEligible(why));
-            return false;
-        }
-        let path = window::process_path(hwnd);
-        let exe = exe_name(&path);
-        if window::is_system_app(&path.to_uppercase()) {
-            tracing::debug!(hwnd = key, exe, "native maximize: system app");
-            return false;
-        }
-        let title = window::title(hwnd);
-        let excluded = self.excluded_lists(&fz.settings.excluded_apps);
-        if is_app_excluded(&path, &title, &excluded) {
-            tracing::debug!(hwnd = key, exe, "native maximize: {}", NativeReason::ExcludedApp);
-            return false;
-        }
-
-        let Some(mon) = self.monitors.for_window(hwnd) else {
-            tracing::debug!(hwnd = key, "native maximize: monitor unknown");
+        let Some((exe, mon, resolution)) = self.zones_for(hwnd, true) else {
             return false;
         };
-        let window_vd = vdesktop::window_desktop(hwnd);
-        let desktops = desktop_candidates(
-            window_vd.as_deref(),
-            vdesktop::registry_current().as_deref(),
-            fz.last_used_vd,
-        );
-        let (resolution, verdict) = policy::monitor_zones(&self.config, &fz, &mon.desc, &desktops);
-        let resolution = match (resolution, verdict) {
-            (Some(r), Ok(())) => r,
-            (_, Err(reason)) => {
-                tracing::debug!(hwnd = key, exe, monitor = %mon.desc.id.device.id, %reason, "native maximize");
-                return false;
-            }
-            (None, Ok(())) => return false,
-        };
-        if self.config.on_fancyzones_mismatch == MismatchAction::Native
-            && self.drift.is_confirmed(&drift_key(&mon.desc, Some(&resolution)))
-        {
-            tracing::debug!(hwnd = key, exe, "native maximize: {}", NativeReason::FancyZonesDisagree);
-            return false;
-        }
 
         let mut cursor = POINT::default();
         let _ = unsafe { GetCursorPos(&mut cursor) };

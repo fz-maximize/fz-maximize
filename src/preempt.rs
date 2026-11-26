@@ -73,6 +73,10 @@ pub enum Kind {
     /// The title bar of a locked (zone-maximized) window is being dragged: restore its
     /// pre-snap size under the cursor and let the move continue (drag to restore).
     DragRestore = 6,
+    /// A maximize gesture may follow (the maximize button is pressed, or a title-bar
+    /// click may become a double-click): get the window's picture ready for the
+    /// animation now, so it can start as soon as the gesture completes.
+    Prepare = 7,
 }
 
 impl Kind {
@@ -84,6 +88,7 @@ impl Kind {
             4 => Kind::WinUpFull,
             5 => Kind::Bypassed,
             6 => Kind::DragRestore,
+            7 => Kind::Prepare,
             _ => return None,
         })
     }
@@ -96,6 +101,7 @@ impl Kind {
             Kind::WinUpFull => "Win+bypass+Up",
             Kind::Bypassed => "bypass-modifier click",
             Kind::DragRestore => "title-bar drag (restore)",
+            Kind::Prepare => "maximize gesture starting",
         }
     }
 }
@@ -295,6 +301,25 @@ impl Recognizer {
     /// Whether mouse moves matter right now (so the hook can skip them cheaply).
     pub fn wants_moves(&self) -> bool {
         matches!(self.pending, Some(Pending::CaptionHold { .. }))
+    }
+
+    /// The window whose maximize button is being pressed (its release will maximize it).
+    pub fn pressing_max_button(&self) -> Option<Hwnd> {
+        match self.pending {
+            Some(Pending::MaxButton(root)) => Some(root),
+            _ => None,
+        }
+    }
+
+    /// After a release: if it ended a plain click on a title bar (released where it was
+    /// pressed, within the double-click time), the window a second click would maximize.
+    /// A release that ended a double-click, or a drag, returns `None`.
+    pub fn first_caption_click(&self, pt: Point, time: u32, dbl: DoubleClick) -> Option<Hwnd> {
+        let prev = self.last_caption?;
+        (time.wrapping_sub(prev.time) <= dbl.time_ms
+            && (pt.x - prev.pt.x).abs() <= dbl.cx / 2
+            && (pt.y - prev.pt.y).abs() <= dbl.cy / 2)
+            .then_some(prev.root)
     }
 
     /// A key event. `intercept` returns the foreground window to place when Win+Up may
@@ -543,9 +568,16 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
             }
         } else if msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP {
             LEFT_HELD.store(msg == WM_LBUTTONDOWN, Ordering::Relaxed);
+            // The window to get ready for an animation: a maximize gesture may follow.
+            let mut prepare: Option<Hwnd> = None;
             let verdict = RECOGNIZER.with(|r| {
                 let Ok(mut r) = r.try_borrow_mut() else {
                     return Verdict::Pass;
+                };
+                let dbl = DoubleClick {
+                    time_ms: unsafe { GetDoubleClickTime() },
+                    cx: unsafe { GetSystemMetrics(SM_CXDOUBLECLK) },
+                    cy: unsafe { GetSystemMetrics(SM_CYDOUBLECLK) },
                 };
                 if msg == WM_LBUTTONDOWN {
                     let press = match root_at(info.pt) {
@@ -575,19 +607,25 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                             locked: false,
                         },
                     };
-                    let dbl = DoubleClick {
-                        time_ms: unsafe { GetDoubleClickTime() },
-                        cx: unsafe { GetSystemMetrics(SM_CXDOUBLECLK) },
-                        cy: unsafe { GetSystemMetrics(SM_CYDOUBLECLK) },
-                    };
-                    r.press(press, dbl)
+                    let verdict = r.press(press, dbl);
+                    if mouse_on {
+                        prepare = r.pressing_max_button();
+                    }
+                    verdict
                 } else {
-                    r.release(|root| {
+                    let verdict = r.release(|root| {
                         root_at(info.pt).is_some_and(|h| hwnd_key(h) == root)
                             && hit_test(hwnd_from(root), info.pt) == HT_MAXBUTTON
-                    })
+                    });
+                    if mouse_on {
+                        prepare = r.first_caption_click(Point::new(info.pt.x, info.pt.y), info.time, dbl);
+                    }
+                    verdict
                 }
             });
+            if let Some(h) = prepare {
+                fire(h, Kind::Prepare);
+            }
             match verdict {
                 Verdict::Fire(h, kind) => fire(h, kind),
                 Verdict::Notice(h) => fire(h, Kind::Bypassed),
@@ -866,6 +904,40 @@ mod tests {
         );
         // A third click starts over (not a second double-click).
         assert_eq!(r.press(press(HT_CAPTION, 51, 1300), DBL), Verdict::Pass);
+    }
+
+    #[test]
+    fn gestures_announce_themselves_early() {
+        // Maximize button: known at the press, before the release maximizes.
+        let mut r = Recognizer::default();
+        assert_eq!(r.pressing_max_button(), None);
+        r.press(press(HT_MAXBUTTON, 50, 0), DBL);
+        assert_eq!(r.pressing_max_button(), Some(W));
+        r.release(|_| true);
+        assert_eq!(r.pressing_max_button(), None);
+        // Bypass held: Windows maximizes natively, nothing to prepare.
+        let mut bypass = press(HT_MAXBUTTON, 50, 0);
+        bypass.bypass = true;
+        r.press(bypass, DBL);
+        assert_eq!(r.pressing_max_button(), None);
+
+        // Title bar: a plain first click may become a double-click.
+        let mut r = Recognizer::default();
+        r.press(press(HT_CAPTION, 50, 1000), DBL);
+        r.release(|_| unreachable!());
+        assert_eq!(r.first_caption_click(Point::new(51, 10), 1080, DBL), Some(W));
+        // Released elsewhere (a drag) or too late: no.
+        assert_eq!(r.first_caption_click(Point::new(300, 10), 1080, DBL), None);
+        assert_eq!(r.first_caption_click(Point::new(51, 10), 1600, DBL), None);
+        // The release that completes a double-click: no (it maximizes right away).
+        r.press(press(HT_CAPTION, 51, 1200), DBL);
+        r.release(|_| unreachable!());
+        assert_eq!(r.first_caption_click(Point::new(51, 10), 1250, DBL), None);
+        // Clicks elsewhere in the window: no.
+        let mut r = Recognizer::default();
+        r.press(press(5, 50, 1000), DBL);
+        r.release(|_| unreachable!());
+        assert_eq!(r.first_caption_click(Point::new(50, 10), 1050, DBL), None);
     }
 
     #[test]

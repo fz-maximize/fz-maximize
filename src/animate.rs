@@ -78,6 +78,11 @@ use crate::window;
 
 pub const OVERLAY_CLASS: PCWSTR = w!("fz-maximize.animation");
 const WM_APP_ANIMATE: u32 = WM_APP + 10;
+/// Above `WM_APP_ANIMATE`, so a running animation leaves it queued (see
+/// `pump_and_check_new_request`).
+const WM_APP_PREPARE: u32 = WM_APP + 11;
+/// A prepared picture older than this isn't used (the window may have changed).
+const PREPARED_MAX_AGE: Duration = Duration::from_millis(1500);
 /// Colour key: overlay pixels of this colour are fully transparent.
 const KEY: COLORREF = COLORREF(0x00FF_00FF);
 /// After the last frame, how long to wait for the real window to be in place.
@@ -419,6 +424,14 @@ impl Animator {
         })
     }
 
+    /// A maximize gesture has begun on `target`: copy its picture now, so the animation
+    /// can start without waiting for the copy.
+    pub fn prepare(&self, target: Hwnd) {
+        unsafe {
+            let _ = PostThreadMessageW(self.thread_id, WM_APP_PREPARE, WPARAM(target as usize), LPARAM(0));
+        }
+    }
+
     /// Queue an animated move (finishes any running animation immediately).
     pub fn animate(&self, req: Request) {
         let raw = Box::into_raw(Box::new(req));
@@ -704,7 +717,7 @@ fn create_popup(area: &Rect, ex: WINDOW_EX_STYLE) -> Option<HWND> {
 fn thread_main() {
     // A thread timer to let go of the cached windows when animations stop.
     unsafe {
-        SetTimer(None, 0, 10_000, None);
+        SetTimer(None, 0, 2_000, None);
     }
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
@@ -716,6 +729,10 @@ fn thread_main() {
             // SAFETY: posted by `Animator::animate` with a leaked Box<Request>.
             let req = unsafe { Box::from_raw(msg.lParam.0 as *mut Request) };
             run(*req);
+            continue;
+        }
+        if msg.message == WM_APP_PREPARE {
+            prepare(msg.wParam.0 as Hwnd);
             continue;
         }
         unsafe {
@@ -856,6 +873,12 @@ fn destroy_windows(w: Windows) {
 
 /// Called on the thread's idle timer.
 fn drop_idle_windows() {
+    // A prepared picture no maximize used (a single title-bar click, a cancelled press).
+    PREPARED.with_borrow_mut(|p| {
+        if p.as_ref().is_some_and(|p| p.at.elapsed() > PREPARED_MAX_AGE) {
+            *p = None;
+        }
+    });
     WINDOWS.with_borrow_mut(|w| {
         if w.as_ref().is_some_and(|w| w.last_used.elapsed() >= KEEP_WINDOWS) {
             destroy_windows(w.take().unwrap());
@@ -880,12 +903,68 @@ impl Drop for Thumb {
     }
 }
 
+/// The invisible resize borders of `target` (whose window rect is `win`).
+fn margins_of(target: HWND, win: &Rect) -> Margins {
+    window::frame_rect(target)
+        .map(|f| Margins::between(*win, f))
+        .filter(Margins::is_plausible)
+        .unwrap_or_default()
+}
+
+/// A window's picture copied ahead of a likely maximize (see `Animator::prepare`).
+struct Prepared {
+    target: Hwnd,
+    /// The window rect and visible frame it was copied at.
+    window: Rect,
+    frame: Rect,
+    picture: Canvas,
+    at: Instant,
+}
+
+thread_local! {
+    static PREPARED: RefCell<Option<Prepared>> = const { RefCell::new(None) };
+}
+
+fn prepare(target: Hwnd) {
+    let hwnd = hwnd_from(target);
+    let Some(win) = window::window_rect(hwnd) else {
+        return;
+    };
+    let frame = win.shrink(margins_of(hwnd, &win));
+    if frame.is_empty() {
+        return;
+    }
+    let start = Instant::now();
+    let Some(picture) = Canvas::capture(&frame) else {
+        return;
+    };
+    tracing::debug!(
+        hwnd = target,
+        ms = start.elapsed().as_millis() as u64,
+        "picture copied ahead of a likely maximize"
+    );
+    PREPARED.with_borrow_mut(|p| {
+        *p = Some(Prepared {
+            target,
+            window: win,
+            frame,
+            picture,
+            at: Instant::now(),
+        })
+    });
+}
+
+/// The prepared picture, if it was copied from `target` as it still is (`window`,
+/// `frame`) and recently. Taken either way: a picture is used at most once.
+fn take_prepared(target: Hwnd, window: &Rect, frame: &Rect) -> Option<Canvas> {
+    let p = PREPARED.with_borrow_mut(Option::take)?;
+    (p.target == target && p.window == *window && p.frame == *frame && p.at.elapsed() <= PREPARED_MAX_AGE)
+        .then_some(p.picture)
+}
+
 fn animate_move(target: HWND, req: &Request) -> bool {
     // Animate the visible frames, not the invisible resize borders around them.
-    let margins = window::frame_rect(target)
-        .map(|f| Margins::between(req.from, f))
-        .filter(Margins::is_plausible)
-        .unwrap_or_default();
+    let margins = margins_of(target, &req.from);
     let (from, to) = (req.from.shrink(margins), req.to.shrink(margins));
     if from.is_empty() || to.is_empty() {
         return false;
@@ -895,8 +974,11 @@ fn animate_move(target: HWND, req: &Request) -> bool {
     let rel = |r: &Rect| r.offset(-area.left, -area.top);
     let from_r = rel(&from);
 
-    // 1. The old window's frame: the only pixels copied from the screen.
-    let Some(old_window) = Canvas::capture(&from) else {
+    // 1. The old window's frame: the only pixels copied from the screen, usually already
+    //    while the gesture was being made.
+    let prepared = take_prepared(req.target, &req.from, &from);
+    let was_prepared = prepared.is_some();
+    let Some(old_window) = prepared.or_else(|| Canvas::capture(&from)) else {
         return false;
     };
     let capture_ms = setup_start.elapsed().as_millis() as u64;
@@ -1024,6 +1106,7 @@ fn animate_move(target: HWND, req: &Request) -> bool {
         flushed_ms,
         placed_ms,
         background_windows,
+        was_prepared,
         source_has_borders,
         "animation finished"
     );

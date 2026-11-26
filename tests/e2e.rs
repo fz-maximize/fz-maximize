@@ -1974,7 +1974,10 @@ fn win_key_prepare_vs_start_menu() {
         v.sort();
         v[v.len() / 2]
     };
-    for (label, config) in [("copy on Win down", None), ("no copy (animation off)", Some("animate_maximize = false\n"))] {
+    for (label, config) in [
+        ("copy on Win down", None),
+        ("no copy (animation off)", Some("animate_maximize = false\n")),
+    ] {
         let Some((_guard, h, zones, log)) = setup_with("fz-maximize-e2e-winkey.log", config) else {
             return;
         };
@@ -1988,7 +1991,10 @@ fn win_key_prepare_vs_start_menu() {
             drop(tap); // Start opens on release (Keys' drop waits 100 ms)
             let iv = composition_intervals(Duration::from_millis(500));
             frames += iv.len();
-            stutters += iv.iter().filter(|d| d.as_secs_f64() > refresh.as_secs_f64() * 1.5).count();
+            stutters += iv
+                .iter()
+                .filter(|d| d.as_secs_f64() > refresh.as_secs_f64() * 1.5)
+                .count();
             worst = worst.max(iv.iter().copied().max().unwrap_or_default());
             chord(&[VK_ESCAPE]);
             std::thread::sleep(Duration::from_millis(500));
@@ -2011,7 +2017,10 @@ fn win_key_prepare_vs_start_menu() {
                 std::thread::sleep(Duration::from_millis(700));
             }
             let text = std::fs::read_to_string(&log).unwrap_or_default();
-            for line in text.lines().filter(|l| l.contains("animation finished") || l.contains("copied ahead")) {
+            for line in text
+                .lines()
+                .filter(|l| l.contains("animation finished") || l.contains("copied ahead"))
+            {
                 eprintln!("  {}", line.split("DEBUG ").nth(1).unwrap_or(line));
             }
         }

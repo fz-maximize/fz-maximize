@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.28.0.schema.json
+
+PackageIdentifier: fz-maximize.fz-maximize
+PackageVersion: 0.3.2
+InstallerType: inno
+Scope: user
+InstallModes:
+- interactive
+- silent
+- silentWithProgress
+UpgradeBehavior: install
+ReleaseDate: 2026-11-26
+# Inno Setup's uninstall key: AppId + "_is1". Lets winget recognize an installed copy.
+ProductCode: '{23A7EC64-695C-4A8E-A06E-FEBBD469AA50}_is1'
+AppsAndFeaturesEntries:
+- DisplayName: fz-maximize
+  Publisher: fz-maximize
+  ProductCode: '{23A7EC64-695C-4A8E-A06E-FEBBD469AA50}_is1'
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/fz-maximize/fz-maximize/releases/download/v0.3.2/fz-maximize-0.3.2-x64-setup.exe
+  InstallerSha256: 60331F338BB630A01B68FC40EA5A5CE224447C69202E0C84AEA39A7A95462B35
+- Architecture: arm64
+  InstallerUrl: https://github.com/fz-maximize/fz-maximize/releases/download/v0.3.2/fz-maximize-0.3.2-arm64-setup.exe
+  InstallerSha256: 8B3E7E76D66A07F33B02109C11AEC0805D87CB11054954726C9E7BA1869F1AF2
+ManifestType: installer
+ManifestVersion: 1.28.0

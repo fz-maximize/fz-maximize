@@ -1,5 +1,9 @@
 # Dependabot version updates. (Security updates and alerts are enabled in the repo
 # settings and open PRs as soon as an advisory affects a dependency.)
+#
+# Each ecosystem waits 7 days after a release before proposing it (cooldown), so a
+# hijacked or broken version is usually caught and yanked before it reaches us. The
+# cooldown applies to version updates only; security updates still arrive right away.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -8,6 +12,8 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: deps
     groups:
@@ -22,6 +28,8 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: site
     groups:
@@ -34,6 +42,8 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: ci
     groups:

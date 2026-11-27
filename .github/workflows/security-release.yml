@@ -67,12 +67,8 @@ jobs:
           fi
           git show "$released:Cargo.lock" > "$RUNNER_TEMP/released.lock"
           if [[ "$TEST" == true ]]; then
-            printf '
-[[package]]
-name = "time"
-version = "0.1.43"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-' >> "$RUNNER_TEMP/released.lock"
+            # time 0.1.43 has RUSTSEC-2020-0071.
+            printf '\n[[package]]\nname = "time"\nversion = "0.1.43"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n' >> "$RUNNER_TEMP/released.lock"
           fi
           python3 .github/scripts/security-fixes.py "$RUNNER_TEMP/released.lock" Cargo.lock > fixes.json
           cat fixes.json

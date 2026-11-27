@@ -263,6 +263,26 @@ impl UpdateState {
             .filter(|a| self.skipped.as_deref() != Some(a.version.as_str()))
     }
 
+    /// The update the tray icon's dot is for: offered and not yet decided on. Choosing a
+    /// time is a decision (the menu and tooltip show when); reminders aren't.
+    pub fn waiting(&self) -> Option<&Pending> {
+        self.offered()
+            .filter(|a| !self.scheduled.as_ref().is_some_and(|s| s.version == a.version))
+    }
+
+    /// At start: forget an offer for a version this one already is (or is newer than),
+    /// e.g. after updating with the installer from the website.
+    pub fn forget_installed(&mut self, current: Version) -> bool {
+        let stale = self
+            .available
+            .as_ref()
+            .is_some_and(|a| Version::parse(&a.version).is_none_or(|v| v <= current));
+        if stale {
+            self.available = None;
+        }
+        stale
+    }
+
     pub fn skip(&mut self, version: &str) {
         self.skipped = Some(version.to_string());
         self.remind = None;
@@ -796,6 +816,39 @@ mod tests {
         assert_eq!(s.found(Some(&r), v("0.3.5"), 8000), Found::UpToDate);
         assert!(s.available.is_none());
         assert_eq!(s.found(None, cur, 9000), Found::UpToDate);
+    }
+
+    #[test]
+    fn tray_dot_waits_for_a_decision() {
+        let r = parse_release(JSON).unwrap();
+        let cur = v("0.3.4");
+        let mut s = UpdateState::default();
+        assert!(s.waiting().is_none());
+        s.found(Some(&r), cur, 1000);
+        assert_eq!(s.waiting().unwrap().version, "0.3.5");
+
+        // "Remind me" leaves it waiting; choosing a time decides it.
+        s.remind_in("0.3.5", 3, 1000);
+        assert!(s.waiting().is_some());
+        s.schedule("0.3.5", 5000);
+        assert!(s.waiting().is_none());
+        assert_eq!(s.offered().unwrap().version, "0.3.5", "still in the menu");
+        // An install that started (and failed) is waiting again.
+        s.started_install("0.3.5");
+        assert!(s.waiting().is_some());
+
+        // Skipping decides it; a newer version waits again.
+        s.skip("0.3.5");
+        assert!(s.waiting().is_none());
+        let newer = parse_release(&JSON.replace("v0.3.5\", \"html", "v0.3.6\", \"html")).unwrap();
+        s.found(Some(&newer), cur, 7000);
+        assert_eq!(s.waiting().unwrap().version, "0.3.6");
+
+        // Updated some other way: forgotten at the next start.
+        assert!(!s.forget_installed(cur));
+        assert!(s.forget_installed(v("0.3.6")));
+        assert!(s.waiting().is_none() && s.offered().is_none());
+        assert!(!s.forget_installed(v("0.3.6")));
     }
 
     #[test]

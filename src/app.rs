@@ -152,18 +152,34 @@ impl App {
 
     fn tooltip(&self) -> String {
         let v = env!("CARGO_PKG_VERSION");
-        if self.engine.paused() {
+        let name = if self.engine.paused() {
             format!("fz-maximize {v} (paused)")
         } else {
-            format!("fz-maximize {v}: maximize fills the FancyZones zone")
+            format!("fz-maximize {v}")
+        };
+        if let Some(p) = self.update.waiting() {
+            return format!("{name}: update to {} available", p.version);
+        }
+        if let Some(p) = self.update.offered()
+            && let Some(s) = self.update.scheduled.as_ref().filter(|s| s.version == p.version)
+        {
+            let at = local_time_label(s.at_unix.saturating_sub(update::unix_now()));
+            return format!("{name}: update to {} at {at}", p.version);
+        }
+        if self.engine.paused() {
+            name
+        } else {
+            format!("{name}: maximize fills the FancyZones zone")
         }
     }
 
+    /// The tray icon and tooltip: paused or not, and the dot while an update is waiting.
     fn refresh_tray(&mut self) {
         let tip = self.tooltip();
         let paused = self.engine.paused();
+        let dot = self.update.waiting().is_some();
         if let Some(t) = &mut self.tray {
-            t.set_state(paused, &tip);
+            t.set_state(paused, dot, &tip);
         }
     }
 
@@ -565,6 +581,7 @@ impl App {
                 self.summary()
             },
             update: self.update_menu_label(),
+            update_dot: self.update.waiting().is_some(),
             check: if self.config.fancyzones_check {
                 self.drift.state.summary()
             } else {
@@ -1283,12 +1300,14 @@ fn local_time_label(secs_ahead: u64) -> String {
 }
 
 impl App {
-    fn save_update_state(&self) {
+    /// Save the update state after any change, and show it on the tray icon.
+    fn save_update_state(&mut self) {
         if let Some(path) = &self.update_path
             && let Err(e) = self.update.save(path)
         {
             tracing::warn!(error = %e, "could not save update state");
         }
+        self.refresh_tray();
     }
 
     /// At start: report a finished update, schedule the first check, and ask (once)
@@ -1313,9 +1332,13 @@ impl App {
                     );
                 }
             }
-            if v == current {
-                self.update.available = None;
-            }
+            self.save_update_state();
+        }
+        // An offer for the version running now, or an older one, is stale: this version
+        // was just installed by the update, or some other way (such as the installer from
+        // the website).
+        if self.update.forget_installed(update::Version::current()) {
+            tracing::info!("forgot the offer of an installed update");
             self.save_update_state();
         }
         unsafe {

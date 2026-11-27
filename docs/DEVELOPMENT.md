@@ -98,7 +98,10 @@ The release binary is a GUI-subsystem app, so in PowerShell pipe its output to s
 * **Updates** (`update.rs`, `update_dialog.rs`; `check_for_updates`, off by default, asked
   once). Once a day a worker thread asks GitHub's API for the latest release (WinHTTP, so
   proxies work); a newer one is offered with a notification, and the update window installs
-  it now, schedules it, reminds later or skips it (`update.json` keeps that state).
+  it now, schedules it, reminds later or skips it (`update.json` keeps that state). Until
+  it's installed, skipped or scheduled, the tray icon carries a yellow dot (drawn into the
+  icon in `tray.rs`, with a see-through ring around it) and the update is the menu's first,
+  bold item.
   Installing downloads the matching release asset (only from this repo's release downloads),
   checks its SHA-256 against `SHA256SUMS.txt`, then runs the installer silently (it closes
   and restarts the app) or, for a portable copy, swaps the exe (`fz-maximize.exe.old`) and

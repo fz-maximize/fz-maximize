@@ -10,6 +10,12 @@ checks that the version in Cargo.toml has an entry, so add one in the version bu
 Security release PRs add theirs automatically.
 -->
 
+## 0.4.4
+
+- New About window (tray menu → About fz-maximize): which version you have, what's new in it, and a button that checks for updates and installs one.
+- When an update is offered, the update window shows what's new in it.
+- The tray icon's tooltip shows the version.
+
 ## 0.4.3
 
 - The maximize animation no longer turns everything around the window black when the NVIDIA App is running. Its invisible full-screen overlay window showed up in the animation as solid black.

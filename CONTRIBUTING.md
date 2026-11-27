@@ -47,7 +47,11 @@ Maintainers commit with the project identity, not a personal one. In your clone:
 account's private GitHub address; older commits use `maintainers@fz-maximize.invalid`).
 
 Dependabot opens weekly PRs for Rust crates, GitHub Actions and the website's npm
-packages, plus immediate ones for security advisories. Review them like any other PR.
+packages, plus immediate ones for security advisories. Low-risk ones (website packages,
+and patch or minor updates of crates and Actions) are approved by the
+fz-maximize-automerge app and merge on their own once CI passes; see
+`.github/workflows/dependabot-automerge.yml`. Review the rest (major versions, changed
+maintainers) like any other PR.
 
 ## Development
 

@@ -24,6 +24,7 @@ unless you pipe it somewhere, as with `| Out-String` above.
 | `fz-maximize` | Starts fz-maximize with its tray icon. Only one copy runs at a time. |
 | `fz-maximize --dump` | Shows what fz-maximize sees: each monitor's ID, the FancyZones layout matched to it (and for which virtual desktop), the zone rectangles, and whether maximize is redirected there and why. Add `--json` for machine-readable output. |
 | `fz-maximize --settings` | Opens the settings window of the running copy. |
+| `fz-maximize --about` | Opens the About window of the running copy: version, what's new, and the update check. |
 | `fz-maximize --quit` | Asks the running copy to exit. |
 | `fz-maximize --init-config` | Creates the config file with every option documented, if it doesn't exist. |
 | `fz-maximize --autostart on` / `off` / `status` | Turns **Start with Windows** on or off, or shows whether it's on. |
@@ -40,5 +41,5 @@ unless you pipe it somewhere, as with `| Out-String` above.
 
 ## Exit codes
 
-`0` means success. For `--quit` and `--settings`, `1` means no running copy was found.
+`0` means success. For `--quit`, `--settings` and `--about`, `1` means no running copy was found.
 Other failures also exit with a non-zero code and print what went wrong.

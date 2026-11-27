@@ -80,6 +80,8 @@ pub struct Release {
     pub version: Version,
     /// The release's page (release notes).
     pub notes_url: String,
+    /// Its "what's new" entry, as plain text (see `changelog`).
+    pub notes: Option<String>,
     pub assets: Vec<Asset>,
 }
 
@@ -90,6 +92,8 @@ pub fn parse_release(json: &str) -> Option<Release> {
     struct Gh {
         tag_name: String,
         html_url: String,
+        #[serde(default)]
+        body: Option<String>,
         #[serde(default)]
         draft: bool,
         #[serde(default)]
@@ -109,6 +113,7 @@ pub fn parse_release(json: &str) -> Option<Release> {
     Some(Release {
         version: Version::parse(&gh.tag_name)?,
         notes_url: gh.html_url,
+        notes: gh.body.as_deref().and_then(crate::changelog::from_release_notes),
         assets: gh
             .assets
             .into_iter()
@@ -164,6 +169,9 @@ pub fn checksum_for(sums: &str, file: &str) -> Option<String> {
 pub struct Pending {
     pub version: String,
     pub notes_url: String,
+    /// What's new in it (older state files don't have it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,6 +244,7 @@ impl UpdateState {
         self.available = Some(Pending {
             version: v.clone(),
             notes_url: r.notes_url.clone(),
+            notes: r.notes.clone(),
         });
         let skipped = self.skipped.as_deref() == Some(&v);
         let scheduled = self.scheduled.as_ref().is_some_and(|s| s.version == v);

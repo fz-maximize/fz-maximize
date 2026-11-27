@@ -29,11 +29,12 @@ pub enum Command {
     ToggleAutostart,
     CheckUpdates,
     ShowUpdate,
+    About,
     Exit,
 }
 
 impl Command {
-    const ALL: [Command; 9] = [
+    const ALL: [Command; 10] = [
         Command::Settings,
         Command::TogglePause,
         Command::Reload,
@@ -42,6 +43,7 @@ impl Command {
         Command::ToggleAutostart,
         Command::CheckUpdates,
         Command::ShowUpdate,
+        Command::About,
         Command::Exit,
     ];
 
@@ -183,6 +185,7 @@ pub fn show_menu(hwnd: HWND, state: &MenuState) -> Option<Command> {
         };
         add(auto_flags, Some(Command::ToggleAutostart), "Start with &Windows");
         add(MF_STRING, Some(Command::CheckUpdates), "Check for &updates now");
+        add(MF_STRING, Some(Command::About), "&About fz-maximize");
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         add(MF_STRING, Some(Command::Exit), "E&xit");
 

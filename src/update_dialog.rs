@@ -50,6 +50,8 @@ pub struct Offer {
     pub version: String,
     pub current: String,
     pub notes_url: String,
+    /// What's new in it (from the release's notes), shown in the window.
+    pub notes: Option<String>,
     /// False for development builds: they can only be told about new versions.
     pub can_install: bool,
     /// An install already scheduled ("at 3:00 AM"), shown so it can be changed.
@@ -85,6 +87,7 @@ const ID_REMIND: i32 = 12;
 const ID_DAYS: i32 = 13;
 const ID_SKIP: i32 = 14;
 const ID_NOTES: i32 = 15;
+const ID_NOTES_TEXT: i32 = 16;
 const ID_HINT_FIRST: i32 = 900;
 
 const REMIND_DAYS: [(&str, u64); 3] = [("1 day", 1), ("3 days", 3), ("1 week", 7)];
@@ -99,6 +102,7 @@ const BUTTON_W: i32 = 150;
 enum Ctl {
     Label,
     Hint,
+    Notes,
     Button,
     DefaultButton,
     Combo,
@@ -153,16 +157,22 @@ fn layout(offer: &Offer) -> (Vec<Spec>, i32) {
         true,
     );
     y += 26;
-    add(
-        ID_NOTES,
-        Ctl::Button,
-        &format!("What's new in {}", offer.version),
-        PAD,
-        y,
-        190,
-        28,
-        true,
-    );
+    if let Some(notes) = &offer.notes {
+        add(ID_NOTES_TEXT, Ctl::Notes, notes, PAD, y, inner, 110, true);
+        y += 118;
+        add(ID_NOTES, Ctl::Button, "Full release notes", PAD, y, 190, 28, true);
+    } else {
+        add(
+            ID_NOTES,
+            Ctl::Button,
+            &format!("What's new in {}", offer.version),
+            PAD,
+            y,
+            190,
+            28,
+            true,
+        );
+    }
     y += 42;
     let can = offer.can_install;
     let right = PAD + BUTTON_W + 10;
@@ -253,15 +263,28 @@ fn create_controls(hwnd: HWND, specs: &[Spec]) {
     for s in specs {
         let (class, style): (PCWSTR, u32) = match s.ctl {
             Ctl::Label | Ctl::Hint => (w!("STATIC"), 0),
+            Ctl::Notes => (
+                w!("EDIT"),
+                (windows::Win32::UI::WindowsAndMessaging::ES_MULTILINE
+                    | windows::Win32::UI::WindowsAndMessaging::ES_READONLY
+                    | windows::Win32::UI::WindowsAndMessaging::ES_AUTOVSCROLL) as u32
+                    | WS_VSCROLL.0
+                    | WS_TABSTOP.0,
+            ),
             Ctl::Button => (w!("BUTTON"), BS_PUSHBUTTON as u32 | WS_TABSTOP.0),
             Ctl::DefaultButton => (w!("BUTTON"), BS_DEFPUSHBUTTON as u32 | WS_TABSTOP.0),
             Ctl::Combo => (w!("COMBOBOX"), CBS_DROPDOWNLIST as u32 | WS_VSCROLL.0 | WS_TABSTOP.0),
             Ctl::Time => (w!("SysDateTimePick32"), DTS_TIMEFORMAT | DTS_UPDOWN | WS_TABSTOP.0),
         };
         let disabled = if s.enabled { 0 } else { WS_DISABLED.0 };
+        let ex = if matches!(s.ctl, Ctl::Notes) {
+            windows::Win32::UI::WindowsAndMessaging::WS_EX_CLIENTEDGE.0
+        } else {
+            0
+        };
         unsafe {
             let _ = CreateWindowExW(
-                WINDOW_EX_STYLE(0),
+                WINDOW_EX_STYLE(ex),
                 class,
                 &HSTRING::from(s.text.as_str()),
                 WINDOW_STYLE(style | disabled | WS_CHILD.0 | WS_VISIBLE.0),
@@ -419,6 +442,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let id = unsafe { windows::Win32::UI::WindowsAndMessaging::GetDlgCtrlID(child) };
             let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
             unsafe {
+                if id == ID_NOTES_TEXT {
+                    // The read-only notes box: like a page of text, not the dialog.
+                    use windows::Win32::Graphics::Gdi::{COLOR_WINDOW, COLOR_WINDOWTEXT, SetBkColor};
+                    SetTextColor(hdc, windows::Win32::Foundation::COLORREF(GetSysColor(COLOR_WINDOWTEXT)));
+                    SetBkColor(hdc, windows::Win32::Foundation::COLORREF(GetSysColor(COLOR_WINDOW)));
+                    return LRESULT(GetSysColorBrush(COLOR_WINDOW).0 as isize);
+                }
                 if id > ID_HINT_FIRST {
                     SetTextColor(hdc, windows::Win32::Foundation::COLORREF(GetSysColor(COLOR_GRAYTEXT)));
                 }
@@ -608,6 +638,7 @@ mod tests {
             version: "0.3.5".into(),
             current: "0.3.4".into(),
             notes_url: "https://example.invalid".into(),
+            notes: Some("\u{2022} One\r\n\u{2022} Two".into()),
             can_install,
             scheduled: None,
         }
@@ -617,7 +648,7 @@ mod tests {
     fn layout_fits_and_ids_are_unique() {
         for can in [true, false] {
             let (specs, height) = layout(&offer(can));
-            assert!(height > 150 && height < 400, "height {height}");
+            assert!(height > 150 && height < 520, "height {height}");
             let ids: Vec<i32> = specs.iter().map(|s| s.id).filter(|&i| i != 0).collect();
             let mut unique = ids.clone();
             unique.sort();
@@ -626,7 +657,16 @@ mod tests {
             for s in &specs {
                 assert!(s.x >= 0 && s.x + s.w <= WIDTH, "{:?} overflows", s.text);
             }
-            for id in [ID_INSTALL, ID_AT, ID_TIME, ID_REMIND, ID_DAYS, ID_SKIP, ID_NOTES] {
+            for id in [
+                ID_INSTALL,
+                ID_AT,
+                ID_TIME,
+                ID_REMIND,
+                ID_DAYS,
+                ID_SKIP,
+                ID_NOTES,
+                ID_NOTES_TEXT,
+            ] {
                 assert!(specs.iter().any(|s| s.id == id), "missing control {id}");
             }
             let install = specs.iter().find(|s| s.id == ID_INSTALL).unwrap();

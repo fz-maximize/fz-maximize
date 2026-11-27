@@ -139,6 +139,9 @@ jobs:
           else
             git switch -c "$branch" origin/main
             python3 .github/scripts/version.py set "$VERSION"
+            # Its changelog entry (shown in the app and the release notes).
+            jq -r 'group_by(.crate)[] | "- Security fix: updates \(.[0].crate) (" + ([.[] | "\(.id): \(.summary)"] | join("; ")) + ")."' \
+              "$RUNNER_TEMP/fixes.json" | python3 .github/scripts/changelog.py add "$VERSION"
             git -c user.name=fz-maximize -c user.email=361363014+fzmaximize@users.noreply.github.com \
               commit -am "Release $VERSION" -m "Security release: updates crates with known vulnerabilities."
             git push --force origin "HEAD:refs/heads/$branch"

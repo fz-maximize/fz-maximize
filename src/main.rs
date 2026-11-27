@@ -6,9 +6,11 @@
 // Release builds have no console window; debug builds keep one for logging.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod about;
 mod animate;
 mod app;
 mod autostart;
+mod changelog;
 mod config;
 mod drift;
 mod engine;
@@ -47,6 +49,7 @@ USAGE:
     fz-maximize --dump [--json] [--config <path>] show monitors, layouts and zones
     fz-maximize --quit                            stop the running instance
     fz-maximize --settings                        open the settings window of the running instance
+    fz-maximize --about                           open the About window of the running instance
     fz-maximize --init-config [--config <path>]   create the config file (commented defaults)
     fz-maximize --autostart <on|off|status>       manage \"Start with Windows\"
     fz-maximize --version | --help
@@ -67,6 +70,7 @@ enum Cmd {
     Dump { json: bool },
     Quit,
     Settings,
+    About,
     InitConfig,
     Autostart(String),
     Version,
@@ -104,6 +108,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
             "--quit" | "quit" => set(Cmd::Quit, &mut cmd)?,
             "--init-config" => set(Cmd::InitConfig, &mut cmd)?,
             "--settings" | "settings" => set(Cmd::Settings, &mut cmd)?,
+            "--about" | "about" => set(Cmd::About, &mut cmd)?,
             "--autostart" => set(
                 Cmd::Autostart(it.next().ok_or("--autostart needs on|off|status")?),
                 &mut cmd,
@@ -226,6 +231,16 @@ fn main() -> ExitCode {
             attach_console();
             if app::signal_open_settings() {
                 out("opened the settings window of the running fz-maximize");
+                ExitCode::SUCCESS
+            } else {
+                eprintln!("fz-maximize is not running; start it first");
+                ExitCode::from(1)
+            }
+        }
+        Cmd::About => {
+            attach_console();
+            if app::signal_open_about() {
+                out("opened the About window of the running fz-maximize");
                 ExitCode::SUCCESS
             } else {
                 eprintln!("fz-maximize is not running; start it first");
@@ -356,6 +371,7 @@ mod tests {
         assert_eq!(p(&["--autostart", "on"]).unwrap().cmd, Cmd::Autostart("on".into()));
         assert_eq!(p(&["--init-config"]).unwrap().cmd, Cmd::InitConfig);
         assert_eq!(p(&["--settings"]).unwrap().cmd, Cmd::Settings);
+        assert_eq!(p(&["--about"]).unwrap().cmd, Cmd::About);
         let a = p(&["--config", r"C:\x\c.toml"]).unwrap();
         assert_eq!(a.config, Some(PathBuf::from(r"C:\x\c.toml")));
         assert!(p(&["--config"]).is_err());

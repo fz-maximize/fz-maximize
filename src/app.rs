@@ -35,12 +35,13 @@ use crate::monitors::{LiveMonitor, MonitorCache};
 use crate::preempt::{self, InputHooks, Kind, WM_APP_PREEMPT};
 use crate::tray::{self, Command, MenuState, Tray};
 use crate::win::{hwnd_from, hwnd_key, point_from};
-use crate::{autostart, logging, policy, settings, update, update_dialog, vdesktop, window};
+use crate::{about, autostart, changelog, logging, policy, settings, update, update_dialog, vdesktop, window};
 
 pub const WINDOW_CLASS: PCWSTR = w!("fz-maximize.hidden-window");
 const WM_APP_TRAY: u32 = WM_APP + 1;
 /// Posted by `fz-maximize --settings` to the running instance.
 pub const WM_APP_OPEN_SETTINGS: u32 = WM_APP + 4;
+pub const WM_APP_OPEN_ABOUT: u32 = WM_APP + 5;
 const PRUNE_THRESHOLD: usize = 2048;
 const DRIFT_TIMER_ID: usize = 7;
 const UPDATE_TIMER_ID: usize = 8;
@@ -150,10 +151,11 @@ impl App {
     }
 
     fn tooltip(&self) -> String {
+        let v = env!("CARGO_PKG_VERSION");
         if self.engine.paused() {
-            "fz-maximize (paused)".into()
+            format!("fz-maximize {v} (paused)")
         } else {
-            "fz-maximize: maximize fills the FancyZones zone".into()
+            format!("fz-maximize {v}: maximize fills the FancyZones zone")
         }
     }
 
@@ -605,8 +607,9 @@ impl App {
                     tracing::error!(error = %e, "could not change autostart");
                 }
             }
-            Command::CheckUpdates => self.start_update_check(true),
+            Command::CheckUpdates => self.start_update_check(CheckFrom::Menu),
             Command::ShowUpdate => self.open_update_window(false),
+            Command::About => self.open_about(),
             Command::Exit => unsafe {
                 let _ = DestroyWindow(self.hwnd);
             },
@@ -1006,6 +1009,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             with_app(|a| a.open_settings());
             LRESULT(0)
         }
+        WM_APP_OPEN_ABOUT => {
+            with_app(|a| a.open_about());
+            LRESULT(0)
+        }
         WM_APP_PREEMPT => {
             if let Some(kind) = Kind::from_raw(lparam.0) {
                 with_app(|a| a.on_intercepted(hwnd_from(wparam.0 as isize), kind));
@@ -1165,6 +1172,10 @@ pub fn run(config_path: PathBuf, cfg: Config, config_error: Option<String>) -> R
 
     settings::set_apply_handler(apply_settings);
     update_dialog::set_handler(on_update_choice);
+    about::set_handlers(about::Handlers {
+        check: about_check,
+        install: about_install,
+    });
     let hooks = Hooks::install(on_win_event).context("SetWinEventHook")?;
 
     let mut msg = MSG::default();
@@ -1173,7 +1184,7 @@ pub fn run(config_path: PathBuf, cfg: Config, config_error: Option<String>) -> R
         if r.0 == 0 || r.0 == -1 {
             break;
         }
-        if settings::dialog_message(&msg) || update_dialog::dialog_message(&msg) {
+        if settings::dialog_message(&msg) || update_dialog::dialog_message(&msg) || about::dialog_message(&msg) {
             continue;
         }
         unsafe {
@@ -1198,10 +1209,22 @@ pub fn run(config_path: PathBuf, cfg: Config, config_error: Option<String>) -> R
 // Updates (see update.rs and update_dialog.rs)
 // ---------------------------------------------------------------------------------------
 
+/// Who asked for an update check: that decides how the result is shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CheckFrom {
+    /// The daily check: a notification if there's something new.
+    Timer,
+    /// "Check for updates now" in the tray menu: a notification either way, and the update
+    /// window if there's something new.
+    Menu,
+    /// The About window's button: the result is shown in the window.
+    About,
+}
+
 /// Results from the update worker threads, posted to the main window.
 enum UpdateMsg {
     Checked {
-        manual: bool,
+        from: CheckFrom,
         result: Result<Option<update::Release>, String>,
     },
     InstallStarted(update::Started),
@@ -1329,7 +1352,7 @@ impl App {
             self.apply_config(cfg);
         }
         if check {
-            self.start_update_check(false);
+            self.start_update_check(CheckFrom::Timer);
         }
     }
 
@@ -1349,7 +1372,7 @@ impl App {
                     }
                 }
                 if self.config.check_for_updates && self.update.check_due(now) {
-                    self.start_update_check(false);
+                    self.start_update_check(CheckFrom::Timer);
                 }
             }
         }
@@ -1371,16 +1394,16 @@ impl App {
         }
     }
 
-    fn start_update_check(&mut self, manual: bool) {
+    fn start_update_check(&mut self, from: CheckFrom) {
         if self.update_busy {
             return;
         }
         self.update_busy = true;
         let hwnd = self.hwnd.0 as isize;
-        tracing::debug!(manual, "checking for updates");
+        tracing::debug!(?from, "checking for updates");
         std::thread::spawn(move || {
             let result = update::fetch_latest();
-            post_update_msg(hwnd, UpdateMsg::Checked { manual, result });
+            post_update_msg(hwnd, UpdateMsg::Checked { from, result });
         });
     }
 
@@ -1415,20 +1438,22 @@ impl App {
         self.update_busy = false;
         match msg {
             UpdateMsg::Checked {
-                manual,
+                from,
                 result: Ok(release),
             } => {
                 let current = update::Version::current();
                 let found = self.update.found(release.as_ref(), current, update::unix_now());
                 self.save_update_state();
                 tracing::info!(latest = ?release.as_ref().map(|r| r.version.to_string()), ?found, "update check");
-                match (found, manual) {
-                    (update::Found::Notify, false) => {
+                // Any check's result is news for an open About window.
+                about::set_status(self.about_update_status(true));
+                match (found, from) {
+                    (update::Found::Notify, CheckFrom::Timer) => {
                         if let Some(v) = self.update.offered().map(|o| o.version.clone()) {
                             self.notify_update(&v);
                         }
                     }
-                    (update::Found::UpToDate, true) => {
+                    (update::Found::UpToDate, CheckFrom::Menu) => {
                         if let Some(t) = &self.tray {
                             t.notify(
                                 "fz-maximize is up to date",
@@ -1438,13 +1463,16 @@ impl App {
                         }
                     }
                     // Asked for, so show it even if it was snoozed, scheduled or skipped.
-                    (_, true) => self.open_update_window(true),
+                    (_, CheckFrom::Menu) => self.open_update_window(true),
                     _ => {}
                 }
             }
-            UpdateMsg::Checked { manual, result: Err(e) } => {
+            UpdateMsg::Checked { from, result: Err(e) } => {
                 tracing::warn!(error = %e, "update check failed");
-                if manual && let Some(t) = &self.tray {
+                about::set_status(about::Status::Failed(e.clone()));
+                if from == CheckFrom::Menu
+                    && let Some(t) = &self.tray
+                {
                     t.notify("Couldn't check for updates", &e, true);
                 }
             }
@@ -1459,6 +1487,7 @@ impl App {
             }
             UpdateMsg::InstallFailed(e) => {
                 tracing::warn!(error = %e, "update failed");
+                about::set_status(about::Status::InstallFailed(e.clone()));
                 self.update.installing = None;
                 self.save_update_state();
                 if let Some(t) = &self.tray {
@@ -1501,6 +1530,7 @@ impl App {
             version: p.version,
             current: update::Version::current().to_string(),
             notes_url: p.notes_url,
+            notes: p.notes,
             can_install: update::install_kind() != update::InstallKind::Dev,
             scheduled,
         });
@@ -1539,6 +1569,34 @@ impl App {
         self.arm_update_timer();
     }
 
+    /// The About window: version, build, what's new, and the update check.
+    fn open_about(&mut self) {
+        let kind = update::install_kind();
+        let version = update::Version::current().to_string();
+        about::open(about::Info {
+            notes: changelog::notes_for(&version),
+            version,
+            build: about::build_description(&kind),
+            can_install: kind != update::InstallKind::Dev,
+            status: self.about_update_status(false),
+        });
+    }
+
+    /// What the About window says about updates: a known newer version, else "up to date"
+    /// (after a check) or whether daily checks are on.
+    fn about_update_status(&self, checked: bool) -> about::Status {
+        match &self.update.available {
+            Some(p) => about::Status::Available {
+                version: p.version.clone(),
+                notes_url: p.notes_url.clone(),
+            },
+            None if checked => about::Status::UpToDate,
+            None => about::Status::Idle {
+                auto: self.config.check_for_updates,
+            },
+        }
+    }
+
     fn update_menu_label(&self) -> Option<String> {
         let p = self.update.offered()?;
         let now = update::unix_now();
@@ -1573,6 +1631,18 @@ fn ask_about_updates() {
 /// Update-window handler (called from its message handling, with no app borrow held).
 fn on_update_choice(version: &str, choice: update_dialog::Choice) {
     with_app(|a| a.on_update_choice(version, choice));
+}
+
+/// About window: "Check for updates" (no app borrow held, like the update window).
+fn about_check() {
+    about::set_status(about::Status::Checking);
+    with_app(|a| a.start_update_check(CheckFrom::About));
+}
+
+/// About window: "Install x now".
+fn about_install(version: &str) {
+    about::set_status(about::Status::Installing(version.to_string()));
+    with_app(|a| a.start_install(version, true));
 }
 
 /// Open a web page in the default browser.
@@ -1889,6 +1959,15 @@ pub fn dump(config_path: &Path, json: bool) -> Result<String> {
 
 /// Ask a running instance to open its settings window. Returns true if one was found.
 pub fn signal_open_settings() -> bool {
+    signal_open(WM_APP_OPEN_SETTINGS)
+}
+
+/// Ask a running instance to open its About window. Returns true if one was found.
+pub fn signal_open_about() -> bool {
+    signal_open(WM_APP_OPEN_ABOUT)
+}
+
+fn signal_open(msg: u32) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, FindWindowW, PostMessageW};
     match unsafe { FindWindowW(WINDOW_CLASS, PCWSTR::null()) } {
         Ok(h) if !h.is_invalid() => {
@@ -1897,7 +1976,7 @@ pub fn signal_open_settings() -> bool {
                 windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(h, Some(&mut pid));
                 // We are (usually) the foreground process; let the instance take focus.
                 let _ = AllowSetForegroundWindow(pid);
-                let _ = PostMessageW(Some(h), WM_APP_OPEN_SETTINGS, WPARAM(0), LPARAM(0));
+                let _ = PostMessageW(Some(h), msg, WPARAM(0), LPARAM(0));
             }
             true
         }

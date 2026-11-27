@@ -24,7 +24,7 @@ Open an issue using the bug report form. The most useful things to include:
 
 Force-pushes and deleting `main` are blocked for everyone. Direct pushes are blocked
 except for maintainers merging a PR. Release tags (`v*`) can only be created by
-maintainers and can't be moved or deleted once pushed.
+maintainers and the release automation, and can't be moved or deleted once pushed.
 
 ### Merging (maintainers)
 

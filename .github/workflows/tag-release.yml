@@ -1,0 +1,75 @@
+# Tags a release when a version bump reaches main.
+#
+# When `version` in Cargo.toml on main has no `v<version>` tag yet, this creates it
+# (annotated, "fz-maximize <version>"), which starts release.yml. So merging a version bump
+# (by hand, or a security release PR from security-release.yml) is all a release takes.
+#
+# Release tags are protected; the fz-maximize-automerge GitHub App may create them. Its
+# credentials are secrets of the release-automation environment, which only main can use.
+# (A tag pushed with the built-in GITHUB_TOKEN wouldn't start the Release workflow.)
+name: Tag release
+
+on:
+  push:
+    branches: [main]
+    paths: [Cargo.toml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.repository == 'fz-maximize/fz-maximize'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python3 .github/scripts/version.py)
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$version" --silent 2>/dev/null; then
+            echo "v$version already exists. Nothing to do."
+          else
+            echo "v$version isn't tagged yet."
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+          fi
+
+  tag:
+    needs: check
+    if: needs.check.outputs.version != ''
+    runs-on: ubuntu-latest
+    environment: release-automation
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          client-id: ${{ secrets.AUTOMERGE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMERGE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Tag v${{ needs.check.outputs.version }}
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          if [[ "$(python3 .github/scripts/version.py)" != "$VERSION" ]]; then
+            echo "::error::Cargo.toml at $GITHUB_SHA isn't version $VERSION."
+            exit 1
+          fi
+          git -c user.name=fz-maximize -c user.email=361363014+fzmaximize@users.noreply.github.com \
+            tag -a "v$VERSION" -m "fz-maximize $VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/v$VERSION"

@@ -1,0 +1,180 @@
+# Prepares security releases automatically.
+#
+# When the latest release ships a crate (Rust dependency) with a known vulnerability and
+# main no longer does (typically after a Dependabot security update merged), this opens a
+# "Release X.Y.Z" PR that bumps the patch version and lists the advisories it fixes, and
+# requests a review from the release approver (repository variable RELEASE_REVIEWER).
+#
+# Approving that PR is the release approval: it then merges itself, tag-release.yml tags
+# the version, and release.yml builds and publishes it. Closing the PR without merging
+# declines that release; it isn't proposed again.
+#
+# Only crates count: website (npm) and GitHub Actions updates don't change the app.
+# Advisories come from OSV (RustSec + GitHub advisories); see .github/scripts/security-fixes.py.
+#
+# Runs on every push to main (which also keeps an open release PR up to date with main)
+# and daily, for advisories published after the fix was merged.
+#
+# Test run: Actions -> Security release -> Run workflow with "test" ticked pretends the
+# latest release ships a vulnerable crate and opens a draft PR from release/test instead
+# (no review request, no auto-merge). Close it and delete the branch afterwards.
+#
+# Acts as the fz-maximize-automerge GitHub App. Its credentials are secrets of the
+# release-automation environment, which only main can use.
+name: Security release
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 7 * * *" # daily 07:41 UTC
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Test run: pretend the latest release is vulnerable and open a draft test PR"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.repository == 'fz-maximize/fz-maximize'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # tags, and the released Cargo.lock
+          persist-credentials: false
+
+      - id: check
+        env:
+          TEST: ${{ inputs.test }}
+        run: |
+          released=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -v -- - | head -n1)
+          current=$(python3 .github/scripts/version.py)
+          echo "Latest release: $released. main: $current."
+          if [[ "v$current" != "$released" ]]; then
+            echo "main's version isn't released yet; tag-release.yml handles that. Nothing to do."
+            exit 0
+          fi
+          git show "$released:Cargo.lock" > "$RUNNER_TEMP/released.lock"
+          if [[ "$TEST" == true ]]; then
+            printf '
+[[package]]
+name = "time"
+version = "0.1.43"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+' >> "$RUNNER_TEMP/released.lock"
+          fi
+          python3 .github/scripts/security-fixes.py "$RUNNER_TEMP/released.lock" Cargo.lock > fixes.json
+          cat fixes.json
+          if [[ "$(jq length fixes.json)" == 0 ]]; then
+            echo "No vulnerabilities fixed since $released."
+            exit 0
+          fi
+          echo "version=$(python3 .github/scripts/version.py next-patch)" >> "$GITHUB_OUTPUT"
+
+      - if: steps.check.outputs.version != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fixes
+          path: fixes.json
+          retention-days: 7
+
+  release-pr:
+    needs: check
+    if: needs.check.outputs.version != ''
+    runs-on: ubuntu-latest
+    environment: release-automation
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          client-id: ${{ secrets.AUTOMERGE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMERGE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ steps.token.outputs.token }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fixes
+          path: ${{ runner.temp }}
+
+      - name: Open or update the release PR
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+          REVIEWER: ${{ vars.RELEASE_REVIEWER }}
+          TEST: ${{ inputs.test }}
+        run: |
+          branch="release/v$VERSION"
+          title="Release $VERSION (security)"
+          if [[ "$TEST" == true ]]; then
+            branch=release/test
+            title="[Test] $title"
+          fi
+          states=$(gh pr list --head "$branch" --state all --json state --jq '[.[].state] | join(" ")')
+          if [[ " $states " == *" OPEN "* ]]; then
+            open=true
+          elif [[ -n "$states" && "$TEST" != true ]]; then
+            echo "A release PR for $VERSION was already closed ($states): not proposing it again."
+            exit 0
+          else
+            open=false
+          fi
+
+          # The PR is one commit on top of main: the version bump. Rebuild it when main moved.
+          if git rev-parse -q --verify "origin/$branch" >/dev/null &&
+             [[ "$(git rev-parse "origin/$branch^")" == "$(git rev-parse origin/main)" ]]; then
+            echo "$branch is up to date with main."
+          else
+            git switch -c "$branch" origin/main
+            python3 .github/scripts/version.py set "$VERSION"
+            git -c user.name=fz-maximize -c user.email=361363014+fzmaximize@users.noreply.github.com \
+              commit -am "Release $VERSION" -m "Security release: updates crates with known vulnerabilities."
+            git push --force origin "HEAD:refs/heads/$branch"
+          fi
+
+          {
+            if [[ "$TEST" == true ]]; then
+              echo "> **Test run, not a release.** The vulnerable crate below was made up for the test. Close this PR and delete \`release/test\`."
+              echo
+            fi
+            echo "Security release: the latest release ships crates with known vulnerabilities that \`main\` has fixed."
+            echo
+            echo "| Advisory | Crate | Released version | Summary |"
+            echo "|---|---|---|---|"
+            jq -r '.[] | "| [\(.id)](\(.url)) | \(.crate) | \(.version) | \(.summary | gsub("\\|"; "\\\\|")) |"' "$RUNNER_TEMP/fixes.json"
+            echo
+            echo "**Approve this PR to release $VERSION.** It then merges itself, \`v$VERSION\` is tagged, and the Release workflow builds and publishes it (about 15 minutes)."
+            echo "To skip this release, close the PR."
+            echo
+            echo "_Opened by .github/workflows/security-release.yml._"
+          } > body.md
+
+          if [[ "$open" == true ]]; then
+            gh pr edit "$branch" --body-file body.md
+          else
+            draft=()
+            if [[ "$TEST" == true ]]; then draft=(--draft); fi
+            gh pr create --base main --head "$branch" --title "$title" --body-file body.md "${draft[@]}"
+            if [[ "$TEST" != true && -n "$REVIEWER" ]]; then
+              gh pr edit "$branch" --add-reviewer "$REVIEWER" || echo "::warning::Couldn't request a review from $REVIEWER."
+            fi
+          fi
+          if [[ "$TEST" != true ]]; then
+            gh pr merge "$branch" --auto --rebase
+          fi

@@ -1300,6 +1300,96 @@ fn maximize_animates_into_zone_and_back() {
     let _ = (caption, log);
 }
 
+/// The maximize button is pressed on a window partly covered by another one. Its picture is
+/// taken as the button goes down, often before Windows brings it to the front, so it must
+/// be the window drawing itself (PrintWindow), not a screen copy with the other window in it.
+#[test]
+#[ignore = "drives the live desktop with real clicks; run with `task e2e`"]
+fn covered_window_is_pictured_on_its_own() {
+    let Some((_guard, h, zones, log)) = setup_with("fz-maximize-e2e-covered.log", Some("animation_ms = 250\n")) else {
+        return;
+    };
+    let zone = zones[1];
+    let mut original = POINT::default();
+    unsafe { GetCursorPos(&mut original).unwrap() };
+    let _mouse = MouseGuard(original);
+    let before = place_inside(h, &zone);
+
+    // A second Notepad over the lower part of the first, in front of it (both topmost, so
+    // no real window can come between them).
+    let mut cover = Command::new("notepad.exe").spawn().expect("start notepad");
+    let mut cover_h = None;
+    let found = wait_until(Duration::from_secs(5), || {
+        cover_h = find_notepad(cover.id());
+        cover_h.is_some()
+    });
+    struct Cover<'a>(&'a mut Child, Option<HWND>);
+    impl Drop for Cover<'_> {
+        fn drop(&mut self) {
+            if let Some(h) = self.1 {
+                unsafe {
+                    let _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0));
+                }
+            }
+            if !wait_until(Duration::from_secs(2), || self.0.try_wait().ok().flatten().is_some()) {
+                let _ = self.0.kill();
+            }
+        }
+    }
+    let _cover = Cover(&mut cover, cover_h);
+    let Some(cover_h) = cover_h.filter(|_| found) else {
+        eprintln!("SKIP: second Notepad window not found (Notepad may reuse one process)");
+        return;
+    };
+    let (bw, bh) = size_of(&before);
+    unsafe {
+        SetWindowPos(
+            cover_h,
+            Some(HWND_TOPMOST),
+            before.l + bw / 4,
+            before.t + bh / 2,
+            bw / 2,
+            bh / 2 + 100,
+            SWP_NOACTIVATE,
+        )
+        .unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let above = all_top_level_windows();
+    let (pos_cover, pos_target) = (
+        above.iter().position(|&w| w == cover_h),
+        above.iter().position(|&w| w == h),
+    );
+    assert!(
+        pos_cover < pos_target,
+        "the cover window should be in front of the target"
+    );
+
+    let (max_btn, _) = title_bar_buttons(h);
+    click(h, max_btn.x, max_btn.y);
+    assert!(
+        wait_until(Duration::from_secs(2), || frame(h).near(&zone, 1)),
+        "not snapped"
+    );
+    std::thread::sleep(Duration::from_millis(600));
+
+    let text = std::fs::read_to_string(&log).unwrap();
+    let copied = text
+        .lines()
+        .rfind(|l| l.contains("picture copied ahead"))
+        .expect("no picture was copied ahead of the maximize");
+    eprintln!("{copied}");
+    assert!(
+        copied.contains("method: Print") && copied.contains("covered: true"),
+        "a covered window should draw itself: {copied}"
+    );
+    let finished = text
+        .lines()
+        .rfind(|l| l.contains("animation finished"))
+        .expect("no animation");
+    assert!(finished.contains("was_prepared=true"), "{finished}");
+}
+
 #[test]
 #[ignore = "drives the live desktop with real clicks; run with `task e2e`"]
 fn animation_can_be_turned_off() {
@@ -1815,6 +1905,126 @@ fn bench_screen_capture() {
                 times.iter().map(|t| t.round() as i64).collect::<Vec<_>>()
             );
         }
+    }
+}
+
+/// Screen copy (what the animation uses first) vs PrintWindow (its fallback when the copy
+/// comes back black) on every sizeable visible window open now. Prints only each window's
+/// app, class and size, the times, and how much of each picture is pure black; nothing is
+/// saved.
+#[test]
+#[ignore = "diagnostic: benchmarks window capture on the windows open now"]
+fn bench_window_capture() {
+    use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
+    use windows::Win32::Graphics::Gdi::{
+        BitBlt, CAPTUREBLT, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetPixel, HDC,
+        HGDIOBJ, ROP_CODE, ReleaseDC, SRCCOPY, SelectObject,
+    };
+    use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, PW_RENDERFULLCONTENT};
+    use windows::core::PWSTR;
+
+    fn app_of(h: HWND) -> String {
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
+        let Ok(p) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else {
+            return "?".into();
+        };
+        let mut buf = [0u16; 512];
+        let mut n = buf.len() as u32;
+        let ok = unsafe { QueryFullProcessImageNameW(p, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut n) };
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(p) };
+        if ok.is_err() {
+            return "?".into();
+        }
+        let path = String::from_utf16_lossy(&buf[..n as usize]);
+        path.rsplit('\\').next().unwrap_or("?").to_string()
+    }
+    fn black_share(dc: HDC, w: i32, h: i32) -> f32 {
+        let mut black = 0;
+        for row in 0..16 {
+            for col in 0..16 {
+                if unsafe { GetPixel(dc, (2 * col + 1) * w / 32, (2 * row + 1) * h / 32) }.0 == 0 {
+                    black += 1;
+                }
+            }
+        }
+        black as f32 / 256.0
+    }
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    for h in all_top_level_windows() {
+        let mut cloaked = 0u32;
+        unsafe {
+            let _ = DwmGetWindowAttribute(h, DWMWA_CLOAKED, (&mut cloaked as *mut u32).cast(), 4);
+        }
+        if !unsafe { IsWindowVisible(h) }.as_bool() || unsafe { IsIconic(h) }.as_bool() || cloaked != 0 {
+            continue;
+        }
+        let (win, f) = (window_rect(h), frame(h));
+        let (ww, wh) = size_of(&win);
+        let (fw, fh) = size_of(&f);
+        if fw < 300 || fh < 200 {
+            continue;
+        }
+        let (mut screen_ms, mut print_ms) = (Vec::new(), Vec::new());
+        let (mut screen_black, mut print_black) = (0.0, 0.0);
+        let mut print_ok = true;
+        for _ in 0..5 {
+            unsafe {
+                let screen = GetDC(None);
+                for (w, hgt, times, is_print) in [(fw, fh, &mut screen_ms, false), (ww, wh, &mut print_ms, true)] {
+                    let mem = CreateCompatibleDC(Some(screen));
+                    let bmp = CreateCompatibleBitmap(screen, w, hgt);
+                    let old = SelectObject(mem, HGDIOBJ(bmp.0));
+                    let t = Instant::now();
+                    if is_print {
+                        print_ok &= PrintWindow(h, mem, PRINT_WINDOW_FLAGS(PW_RENDERFULLCONTENT)).as_bool();
+                    } else {
+                        let _ = BitBlt(
+                            mem,
+                            0,
+                            0,
+                            w,
+                            hgt,
+                            Some(screen),
+                            f.l,
+                            f.t,
+                            ROP_CODE(SRCCOPY.0 | CAPTUREBLT.0),
+                        );
+                    }
+                    times.push(t.elapsed().as_secs_f64() * 1000.0);
+                    if is_print {
+                        print_black = black_share(mem, w, hgt);
+                    } else {
+                        screen_black = black_share(mem, w, hgt);
+                    }
+                    SelectObject(mem, old);
+                    let _ = DeleteObject(HGDIOBJ(bmp.0));
+                    let _ = DeleteDC(mem);
+                }
+                ReleaseDC(None, screen);
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        eprintln!(
+            "{:<24} {:<32} {fw}x{fh}: screen {:.1} ms ({:.0}% black), PrintWindow {:.1} ms ({:.0}% black){}",
+            app_of(h),
+            class_of(h),
+            median(screen_ms),
+            screen_black * 100.0,
+            median(print_ms),
+            print_black * 100.0,
+            if print_ok { "" } else { " FAILED" },
+        );
     }
 }
 

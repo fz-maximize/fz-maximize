@@ -32,7 +32,9 @@
 //! Only the old window's frame is copied from the screen, and nothing has to be uploaded
 //! for the background, so the animation starts within a frame or two of the gesture.
 //! (Copying the whole area through GDI took 70-120 ms on a 4K hybrid-GPU laptop, and
-//! showing it as a layered window another 100 ms.)
+//! showing it as a layered window another 100 ms.) When that copy comes back black, as
+//! it can where the graphics driver shows apps on hardware overlay planes, the window
+//! draws itself instead (`picture_of`).
 //!
 //! Runs on its own thread so the main thread keeps handling events. A new request
 //! finishes the current animation immediately.
@@ -51,9 +53,10 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CAPTUREBLT, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC,
-    DeleteObject, EndPaint, FillRect, GetDC, HBITMAP, HDC, HGDIOBJ, InvalidateRect, PAINTSTRUCT, ROP_CODE, ReleaseDC,
-    SRCCOPY, SelectObject, UpdateWindow,
+    DeleteObject, EndPaint, FillRect, GetDC, GetPixel, HBITMAP, HDC, HGDIOBJ, InvalidateRect, PAINTSTRUCT, ROP_CODE,
+    ReleaseDC, SRCCOPY, SelectObject, UpdateWindow,
 };
+use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
 use windows::Win32::System::Threading::{
@@ -62,12 +65,12 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::WindowsAndMessaging::{
     ANIMATIONINFO, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows, GW_HWNDPREV,
     GWL_EXSTYLE, GetClientRect, GetMessageW, GetWindow, GetWindowLongPtrW, HTTRANSPARENT, HWND_TOP, HWND_TOPMOST,
-    IsWindow, IsWindowVisible, LWA_ALPHA, MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW, PostThreadMessageW,
-    RegisterClassExW, SPI_GETANIMATION, SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetLayeredWindowAttributes, SetTimer, SetWindowPos,
-    ShowWindow, SystemParametersInfoW, TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_ERASEBKGND, WM_NCHITTEST,
-    WM_PAINT, WM_QUIT, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    IsHungAppWindow, IsWindow, IsWindowVisible, LWA_ALPHA, MSG, PM_NOREMOVE, PM_REMOVE, PW_RENDERFULLCONTENT,
+    PeekMessageW, PostThreadMessageW, RegisterClassExW, SPI_GETANIMATION, SPI_GETCLIENTAREAANIMATION, SW_HIDE,
+    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+    SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage,
+    WINDOW_EX_STYLE, WM_APP, WM_ERASEBKGND, WM_NCHITTEST, WM_PAINT, WM_QUIT, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{BOOL, HSTRING, PCWSTR, w};
 
@@ -458,6 +461,8 @@ struct Canvas {
     dc: HDC,
     bitmap: HBITMAP,
     old: HGDIOBJ,
+    width: i32,
+    height: i32,
 }
 
 impl Canvas {
@@ -474,7 +479,13 @@ impl Canvas {
                 return None;
             }
             let old = SelectObject(dc, HGDIOBJ(bitmap.0));
-            Some(Self { dc, bitmap, old })
+            Some(Self {
+                dc,
+                bitmap,
+                old,
+                width,
+                height,
+            })
         }
     }
 
@@ -498,6 +509,156 @@ impl Canvas {
             copied.is_ok().then_some(canvas)
         }
     }
+
+    /// The share of a 16x16 grid of sample points that are pure black (0, 0, 0). Real
+    /// window content is rarely pure black over large areas (dark themes use dark greys);
+    /// a screen copy of content the copy can't see is.
+    fn black_share(&self) -> f32 {
+        const GRID: i32 = 16;
+        let mut black = 0;
+        for row in 0..GRID {
+            for col in 0..GRID {
+                let x = (2 * col + 1) * self.width / (2 * GRID);
+                let y = (2 * row + 1) * self.height / (2 * GRID);
+                if unsafe { GetPixel(self.dc, x, y) }.0 == 0 {
+                    black += 1;
+                }
+            }
+        }
+        black as f32 / (GRID * GRID) as f32
+    }
+}
+
+/// How a window's picture is taken (see `picture_of`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Method {
+    /// Copied from the screen.
+    Screen,
+    /// Drawn by the window itself (`PrintWindow`).
+    Print,
+}
+
+/// How the old window's picture was taken, for the log.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)] // read through Debug
+struct Capture {
+    method: Method,
+    /// Another window overlapped it, so it was asked to draw itself.
+    covered: bool,
+    /// The first method's picture was mostly black.
+    fallback: bool,
+}
+
+/// A picture this black is taken to be content the method couldn't see.
+const MOSTLY_BLACK: f32 = 0.4;
+
+/// The picture of a window's visible frame `frame` (its window rect is `win`), or None if
+/// there's no usable picture (then the window moves without an animation).
+///
+/// * Nothing in front of it: a screen copy, exactly what's on screen (rounded corners
+///   and all).
+/// * Something in front of it (another window, a tooltip, an always-on-top window): the
+///   window draws itself into a bitmap (`PrintWindow` with PW_RENDERFULLCONTENT, which
+///   also gets GPU-drawn content), so the picture is the window alone. This matters for
+///   the maximize button: the picture is taken as it's pressed, often before Windows has
+///   brought the window to the front.
+///
+/// Both take about the same time (measured on a 4K laptop). If the picture is mostly
+/// black, the other method is tried: some graphics drivers show apps on hardware overlay
+/// planes, which a screen copy sees as black (seen on a Snapdragon laptop). If both are
+/// mostly black (protected video, a window that really is black), there's no animation:
+/// better than a black box.
+fn picture_of(hwnd: HWND, win: &Rect, frame: &Rect) -> Option<(Canvas, Capture)> {
+    let covered = covered_by_others(hwnd, frame);
+    let order: &[Method] = if print_only() {
+        &[Method::Print]
+    } else if covered {
+        &[Method::Print, Method::Screen]
+    } else {
+        &[Method::Screen, Method::Print]
+    };
+    let mut blacks = Vec::new();
+    for (i, &method) in order.iter().enumerate() {
+        let picture = match method {
+            Method::Screen => Canvas::capture(frame),
+            Method::Print => print_window(hwnd, win, frame),
+        };
+        let Some(picture) = picture else {
+            continue;
+        };
+        let black = picture.black_share();
+        if black < MOSTLY_BLACK {
+            let capture = Capture {
+                method,
+                covered,
+                fallback: i > 0,
+            };
+            return Some((picture, capture));
+        }
+        blacks.push((method, black));
+    }
+    tracing::debug!(?blacks, covered, "no usable picture of the window; not animating");
+    None
+}
+
+/// Whether any visible window above `target` in z-order overlaps its frame. Click-through
+/// windows (WS_EX_TRANSPARENT: overlays like fz-maximize's own or a GPU driver's) don't
+/// count: they're usually see-through.
+fn covered_by_others(target: HWND, frame: &Rect) -> bool {
+    unsafe extern "system" fn cb(h: HWND, data: LPARAM) -> BOOL {
+        // SAFETY: `data` is the &mut Vec below, alive for the whole enumeration.
+        let (target, above) = unsafe { &mut *(data.0 as *mut (HWND, Vec<HWND>)) };
+        if h == *target {
+            return BOOL(0); // everything after it is beneath
+        }
+        above.push(h);
+        BOOL(1)
+    }
+    let mut data = (target, Vec::new());
+    unsafe {
+        let _ = EnumWindows(Some(cb), LPARAM(&mut data as *mut _ as isize));
+    }
+    let on_screen = frame.intersection(&virtual_screen());
+    data.1.into_iter().any(|h| {
+        if !unsafe { IsWindowVisible(h) }.as_bool() || window::is_iconic(h) || window::is_cloaked(h) {
+            return false;
+        }
+        let ex = unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) } as u32;
+        if ex & WS_EX_TRANSPARENT.0 != 0 {
+            return false;
+        }
+        window::window_rect(h)
+            .map(|win| window::frame_rect(h).unwrap_or(win))
+            .is_some_and(|f| !f.intersection(&on_screen).is_empty())
+    })
+}
+
+/// `FZM_CAPTURE=print`: always let the window draw itself, never the screen copy
+/// (diagnostic, for comparing the two).
+fn print_only() -> bool {
+    static PRINT_ONLY: OnceLock<bool> = OnceLock::new();
+    *PRINT_ONLY.get_or_init(|| std::env::var("FZM_CAPTURE").is_ok_and(|v| v.eq_ignore_ascii_case("print")))
+}
+
+/// The window draws itself (`PrintWindow`); the part inside `frame` is kept.
+fn print_window(hwnd: HWND, win: &Rect, frame: &Rect) -> Option<Canvas> {
+    // PrintWindow waits for the app; a hung one would stall the animation.
+    if unsafe { IsHungAppWindow(hwnd) }.as_bool() {
+        return None;
+    }
+    let whole = Canvas::new(win.width(), win.height())?;
+    if !unsafe { PrintWindow(hwnd, whole.dc, PRINT_WINDOW_FLAGS(PW_RENDERFULLCONTENT)) }.as_bool() {
+        return None;
+    }
+    let picture = Canvas::new(frame.width(), frame.height())?;
+    blit(
+        picture.dc,
+        &Rect::new(0, 0, frame.width(), frame.height()),
+        whole.dc,
+        frame.left - win.left,
+        frame.top - win.top,
+    );
+    Some(picture)
 }
 
 impl Drop for Canvas {
@@ -918,6 +1079,7 @@ struct Prepared {
     window: Rect,
     frame: Rect,
     picture: Canvas,
+    capture: Capture,
     at: Instant,
 }
 
@@ -935,12 +1097,13 @@ fn prepare(target: Hwnd) {
         return;
     }
     let start = Instant::now();
-    let Some(picture) = Canvas::capture(&frame) else {
+    let Some((picture, capture)) = picture_of(hwnd, &win, &frame) else {
         return;
     };
     tracing::debug!(
         hwnd = target,
         ms = start.elapsed().as_millis() as u64,
+        ?capture,
         "picture copied ahead of a likely maximize"
     );
     PREPARED.with_borrow_mut(|p| {
@@ -949,6 +1112,7 @@ fn prepare(target: Hwnd) {
             window: win,
             frame,
             picture,
+            capture,
             at: Instant::now(),
         })
     });
@@ -956,10 +1120,10 @@ fn prepare(target: Hwnd) {
 
 /// The prepared picture, if it was copied from `target` as it still is (`window`,
 /// `frame`) and recently. Taken either way: a picture is used at most once.
-fn take_prepared(target: Hwnd, window: &Rect, frame: &Rect) -> Option<Canvas> {
+fn take_prepared(target: Hwnd, window: &Rect, frame: &Rect) -> Option<(Canvas, Capture)> {
     let p = PREPARED.with_borrow_mut(Option::take)?;
     (p.target == target && p.window == *window && p.frame == *frame && p.at.elapsed() <= PREPARED_MAX_AGE)
-        .then_some(p.picture)
+        .then_some((p.picture, p.capture))
 }
 
 fn animate_move(target: HWND, req: &Request) -> bool {
@@ -978,7 +1142,7 @@ fn animate_move(target: HWND, req: &Request) -> bool {
     //    while the gesture was being made.
     let prepared = take_prepared(req.target, &req.from, &from);
     let was_prepared = prepared.is_some();
-    let Some(old_window) = prepared.or_else(|| Canvas::capture(&from)) else {
+    let Some((old_window, capture)) = prepared.or_else(|| picture_of(target, &req.from, &from)) else {
         return false;
     };
     let capture_ms = setup_start.elapsed().as_millis() as u64;
@@ -1101,6 +1265,7 @@ fn animate_move(target: HWND, req: &Request) -> bool {
         fps = (f64::from(frames) / elapsed.as_secs_f64().max(0.001)).round(),
         setup_ms,
         capture_ms,
+        ?capture,
         composed_ms,
         shown_ms,
         flushed_ms,
@@ -1116,6 +1281,21 @@ fn animate_move(target: HWND, req: &Request) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn black_share_counts_pure_black_only() {
+        let c = Canvas::new(400, 300).unwrap();
+        let all = Rect::new(0, 0, 400, 300);
+        fill(c.dc, &all, COLORREF(0));
+        assert_eq!(c.black_share(), 1.0);
+        // Dark themes are dark grey, not black.
+        fill(c.dc, &all, COLORREF(0x0C0C0C));
+        assert_eq!(c.black_share(), 0.0);
+        // The left half black (say, a GPU-drawn pane the screen copy couldn't see).
+        fill(c.dc, &Rect::new(0, 0, 200, 300), COLORREF(0));
+        assert_eq!(c.black_share(), 0.5);
+        assert!(c.black_share() >= MOSTLY_BLACK);
+    }
 
     const D: Duration = Duration::from_millis(200);
 

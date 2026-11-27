@@ -75,7 +75,12 @@ The release binary is a GUI-subsystem app, so in PowerShell pipe its output to s
   zone-maximized window are blocked and title-bar drags restore it.
 * **Animation** (`animate.rs`). DWM thumbnails of the window, scaled on the GPU and paced
   with `DwmFlush` at the display's refresh rate, in Windows 10's zoom style or Windows 11's
-  morph style. Follows Windows' animation settings.
+  morph style. Follows Windows' animation settings. The old window's picture is the one
+  thing copied, usually while the gesture is still being made: a screen copy when nothing
+  overlaps the window, otherwise the window draws itself (`PrintWindow`), so a window in
+  front isn't in the picture. A mostly black picture is retried the other way (some
+  graphics drivers show apps on overlay planes that screen copies see as black); if both
+  are black, the window moves without an animation.
 * **FancyZones data** (`fancyzones/`). Parses FancyZones' JSON files, computes zone
   rectangles the way FancyZones does (`layout.rs`), and matches monitors and virtual
   desktops to layouts (`matching.rs`).
@@ -106,6 +111,18 @@ to be an older version: `FZM_UPDATE_TEST_CURRENT=0.3.0`. Two diagnostic tests us
   (`FZM_E2E_UPDATE_PRESS` = `remind` | `skip` | `at` | `install`). With
   `FZM_E2E_UPDATE_EXE` pointing at a copy in an install folder (installed per-user with a
   real release's installer) or a plain folder, `install` exercises a real update.
+
+### Diagnosing the animation's picture
+
+The debug log's `picture copied` and `animation finished` lines say how the old window's
+picture was taken (`method`, `covered`, `fallback`), and `no usable picture` when an
+animation was skipped because it was black. To compare the two methods on a machine:
+
+* `cargo test --release --test e2e bench_window_capture -- --ignored --nocapture`: times a
+  screen copy and `PrintWindow` on each window open now, and how black each picture is
+  (prints only app, class and size; saves nothing).
+* `FZM_CAPTURE=print` makes the app always use `PrintWindow`, for A/B comparisons with
+  the e2e timing tests.
 
 ## Staying in sync with FancyZones
 

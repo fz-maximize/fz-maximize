@@ -10,6 +10,11 @@ checks that the version in Cargo.toml has an entry, so add one in the version bu
 Security release PRs add theirs automatically.
 -->
 
+## 0.4.5
+
+- While an update is waiting, the tray icon shows a small yellow dot, so you still see it if you missed the notification. It stays until you install or skip the update, or pick a time to install it. The update is also the first item in the tray menu, and the icon's tooltip names it.
+- After updating with the installer from the website, the tray menu no longer offers the version you already have.
+
 ## 0.4.4
 
 - New About window (tray menu → About fz-maximize): which version you have, what's new in it, and a button that checks for updates and installs one.

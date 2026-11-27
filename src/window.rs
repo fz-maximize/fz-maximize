@@ -12,12 +12,13 @@ use windows::Win32::UI::HiDpi::{
     GetWindowDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GA_ROOT, GW_OWNER, GWL_EXSTYLE, GWL_STYLE, GetAncestor, GetClassNameW, GetDesktopWindow, GetPropW, GetShellWindow,
-    GetWindow, GetWindowLongPtrW, GetWindowPlacement, GetWindowRect, GetWindowThreadProcessId, InternalGetWindowText,
-    IsIconic, IsWindowVisible, IsZoomed, SM_CXPADDEDBORDER, SM_CXSIZEFRAME, SM_CYSIZEFRAME, SW_RESTORE,
+    GA_ROOT, GW_OWNER, GWL_EXSTYLE, GWL_STYLE, GetAncestor, GetClassNameW, GetDesktopWindow,
+    GetLayeredWindowAttributes, GetPropW, GetShellWindow, GetWindow, GetWindowLongPtrW, GetWindowPlacement,
+    GetWindowRect, GetWindowThreadProcessId, InternalGetWindowText, IsIconic, IsWindowVisible, IsZoomed,
+    LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA, SM_CXPADDEDBORDER, SM_CXSIZEFRAME, SM_CYSIZEFRAME, SW_RESTORE,
     SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER, SetWindowPlacement, SetWindowPos,
-    WINDOWPLACEMENT, WPF_ASYNCWINDOWPLACEMENT, WPF_RESTORETOMAXIMIZED, WS_CAPTION, WS_CHILD, WS_EX_TOOLWINDOW,
-    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_THICKFRAME, WS_VISIBLE,
+    WINDOWPLACEMENT, WPF_ASYNCWINDOWPLACEMENT, WPF_RESTORETOMAXIMIZED, WS_CAPTION, WS_CHILD, WS_EX_LAYERED,
+    WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_THICKFRAME, WS_VISIBLE,
 };
 
 use crate::geometry::{Margins, Rect};
@@ -76,6 +77,21 @@ pub fn is_cloaked(hwnd: HWND) -> bool {
         )
     };
     r.is_ok() && cloaked != 0
+}
+
+/// The opacity a layered window is shown with as a whole (`SetLayeredWindowAttributes`
+/// with LWA_ALPHA; 0 is invisible), or 255 for any other window, including layered
+/// windows drawn with per-pixel alpha (`UpdateLayeredWindow`). DWM thumbnails leave this
+/// out: they draw such a window opaque (an invisible full-screen overlay, such as the
+/// NVIDIA App's, as a black sheet), while per-pixel alpha and colour keys are kept.
+pub fn constant_alpha(hwnd: HWND) -> u8 {
+    if !has(ex_style(hwnd), WS_EX_LAYERED.0) {
+        return 255;
+    }
+    let (mut alpha, mut flags) = (255u8, LAYERED_WINDOW_ATTRIBUTES_FLAGS(0));
+    // Fails for UpdateLayeredWindow windows, which have no constant alpha.
+    let ok = unsafe { GetLayeredWindowAttributes(hwnd, None, Some(&mut alpha), Some(&mut flags)) }.is_ok();
+    if ok && flags.contains(LWA_ALPHA) { alpha } else { 255 }
 }
 
 pub fn class_name(hwnd: HWND) -> String {

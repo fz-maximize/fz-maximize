@@ -78,9 +78,11 @@ The release binary is a GUI-subsystem app, so in PowerShell pipe its output to s
   morph style. Follows Windows' animation settings. The old window's picture is the one
   thing copied, usually while the gesture is still being made: a screen copy when nothing
   overlaps the window, otherwise the window draws itself (`PrintWindow`), so a window in
-  front isn't in the picture. A mostly black picture is retried the other way (some
-  graphics drivers show apps on overlay planes that screen copies see as black); if both
-  are black, the window moves without an animation.
+  front isn't in the picture. A mostly black picture is retried the other way; if both
+  are black, the window moves without an animation. Around the window, the background is
+  live thumbnails of the windows beneath it. A thumbnail draws a layered window without
+  its overall opacity, so that opacity is applied to the thumbnail, and fully
+  transparent windows (the NVIDIA App's invisible full-screen overlay) are left out.
 * **FancyZones data** (`fancyzones/`). Parses FancyZones' JSON files, computes zone
   rectangles the way FancyZones does (`layout.rs`), and matches monitors and virtual
   desktops to layouts (`matching.rs`).
@@ -123,6 +125,14 @@ animation was skipped because it was black. To compare the two methods on a mach
   (prints only app, class and size; saves nothing).
 * `FZM_CAPTURE=print` makes the app always use `PrintWindow`, for A/B comparisons with
   the e2e timing tests.
+
+Black *around* the window comes from the background instead:
+
+* `cargo test --release --test e2e bench_background_thumbnails -- --ignored --nocapture`:
+  for each window open now, shows its DWM thumbnail exactly over a piece of it for a few
+  frames and says how black that is compared with the screen there (prints only class,
+  size and window styles; saves nothing). A window with a black thumbnail but not on
+  screen paints a black box into the animation unless the background leaves it out.
 
 ## Staying in sync with FancyZones
 

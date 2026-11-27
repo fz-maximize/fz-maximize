@@ -88,28 +88,31 @@ fn wait_until(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
     f()
 }
 
-fn find_notepad(pid: u32) -> Option<HWND> {
-    struct Ctx {
-        pid: u32,
-        found: Option<HWND>,
-    }
-    unsafe extern "system" fn cb(h: HWND, lp: LPARAM) -> BOOL {
-        let ctx = unsafe { &mut *(lp.0 as *mut Ctx) };
-        let mut p = 0;
-        unsafe { GetWindowThreadProcessId(h, Some(&mut p)) };
-        let mut cls = [0u16; 64];
-        let n = unsafe { GetClassNameW(h, &mut cls) } as usize;
-        if p == ctx.pid && String::from_utf16_lossy(&cls[..n]) == "Notepad" && unsafe { IsWindowVisible(h) }.as_bool() {
-            ctx.found = Some(h);
-            return BOOL(0);
-        }
-        BOOL(1)
-    }
-    let mut ctx = Ctx { pid, found: None };
-    unsafe {
-        let _ = EnumWindows(Some(cb), LPARAM(&mut ctx as *mut _ as isize));
-    }
-    ctx.found
+fn notepad_windows() -> Vec<HWND> {
+    all_top_level_windows()
+        .into_iter()
+        .filter(|&h| class_of(h) == "Notepad" && unsafe { IsWindowVisible(h) }.as_bool())
+        .collect()
+}
+
+/// Start Notepad and find its new window (None if none appeared). On Windows 11,
+/// `notepad.exe` only hands over to the Store Notepad, whose window belongs to another
+/// process, so this looks for a new "Notepad" window of any process. Notepad doesn't
+/// get the test's output handles: a Store Notepad would keep its pipes open.
+fn open_notepad() -> (Child, Option<HWND>) {
+    let before = notepad_windows();
+    let child = Command::new("notepad.exe")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start notepad");
+    let mut found = None;
+    wait_until(Duration::from_secs(5), || {
+        found = notepad_windows().into_iter().find(|h| !before.contains(h));
+        found.is_some()
+    });
+    (child, found)
 }
 
 struct Guard {
@@ -234,17 +237,8 @@ fn setup_with(log_name: &str, config: Option<&str>) -> Option<(Guard, HWND, Vec<
         "fz-maximize did not start"
     );
 
-    let notepad = Command::new("notepad.exe").spawn().expect("start notepad");
-    let pid = notepad.id();
-    let mut hwnd = None;
-    assert!(
-        wait_until(Duration::from_secs(5), || {
-            hwnd = find_notepad(pid);
-            hwnd.is_some()
-        }),
-        "notepad window not found"
-    );
-    let h = hwnd.unwrap();
+    let (notepad, hwnd) = open_notepad();
+    let h = hwnd.expect("notepad window not found");
     guard.notepad = Some((notepad, h));
     // Keep the test window above everything so synthetic clicks can never land on
     // another (real) window.
@@ -1317,12 +1311,7 @@ fn covered_window_is_pictured_on_its_own() {
 
     // A second Notepad over the lower part of the first, in front of it (both topmost, so
     // no real window can come between them).
-    let mut cover = Command::new("notepad.exe").spawn().expect("start notepad");
-    let mut cover_h = None;
-    let found = wait_until(Duration::from_secs(5), || {
-        cover_h = find_notepad(cover.id());
-        cover_h.is_some()
-    });
+    let (mut cover, cover_h) = open_notepad();
     struct Cover<'a>(&'a mut Child, Option<HWND>);
     impl Drop for Cover<'_> {
         fn drop(&mut self) {
@@ -1337,8 +1326,8 @@ fn covered_window_is_pictured_on_its_own() {
         }
     }
     let _cover = Cover(&mut cover, cover_h);
-    let Some(cover_h) = cover_h.filter(|_| found) else {
-        eprintln!("SKIP: second Notepad window not found (Notepad may reuse one process)");
+    let Some(cover_h) = cover_h else {
+        eprintln!("SKIP: second Notepad window not found (Notepad may have opened a tab instead)");
         return;
     };
     let (bw, bh) = size_of(&before);
@@ -1388,6 +1377,176 @@ fn covered_window_is_pictured_on_its_own() {
         .rfind(|l| l.contains("animation finished"))
         .expect("no animation");
     assert!(finished.contains("was_prepared=true"), "{finished}");
+}
+
+/// A black, fully transparent (LWA_ALPHA 0) layered window covering the screen, on a
+/// thread of its own that keeps its messages flowing. Like the NVIDIA App's overlay
+/// window (`CEF-OSC-WIDGET`): invisible on screen, but a DWM thumbnail draws it black.
+struct InvisibleLayeredWindow {
+    thread_id: u32,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl InvisibleLayeredWindow {
+    fn open(r: &R) -> Self {
+        use windows::Win32::Foundation::{COLORREF, LRESULT};
+        use windows::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject, HBRUSH, UpdateWindow};
+        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows::Win32::System::Threading::GetCurrentThreadId;
+        use windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LWA_ALPHA, MSG, RegisterClassExW,
+            SW_SHOWNOACTIVATE, SetLayeredWindowAttributes, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW, WS_POPUP,
+        };
+        unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+            unsafe { DefWindowProcW(h, m, w, l) }
+        }
+        let r = *r;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || unsafe {
+            let _ = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            let hinstance = GetModuleHandleW(None).unwrap();
+            let class = w!("fz-maximize.e2e.invisible-layered");
+            RegisterClassExW(&WNDCLASSEXW {
+                cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                lpfnWndProc: Some(proc),
+                hInstance: hinstance.into(),
+                lpszClassName: class,
+                hbrBackground: HBRUSH(GetStockObject(BLACK_BRUSH).0),
+                ..Default::default()
+            });
+            let (w, h) = size_of(&r);
+            let window = CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                class,
+                None,
+                WS_POPUP,
+                r.l,
+                r.t,
+                w,
+                h,
+                None,
+                None,
+                Some(hinstance.into()),
+                None,
+            )
+            .unwrap();
+            SetLayeredWindowAttributes(window, COLORREF(0), 0, LWA_ALPHA).unwrap();
+            let _ = ShowWindow(window, SW_SHOWNOACTIVATE);
+            let _ = UpdateWindow(window);
+            tx.send(GetCurrentThreadId()).unwrap();
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+                DispatchMessageW(&msg);
+            }
+            // The window goes with its thread.
+        });
+        Self {
+            thread_id: rx.recv().unwrap(),
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for InvisibleLayeredWindow {
+    fn drop(&mut self) {
+        use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+        unsafe {
+            let _ = PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+        }
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// The animation's overlay is on screen (its helper window shares the class, but is
+/// always cloaked).
+fn animation_overlay_shown() -> bool {
+    use windows::Win32::Graphics::Dwm::DWMWA_CLOAKED;
+    all_top_level_windows().into_iter().any(|h| {
+        let mut cloaked = 0u32;
+        unsafe {
+            let _ = DwmGetWindowAttribute(h, DWMWA_CLOAKED, (&mut cloaked as *mut u32).cast(), 4);
+        }
+        class_of(h) == "fz-maximize.animation" && unsafe { IsWindowVisible(h) }.as_bool() && cloaked == 0
+    })
+}
+
+/// An invisible layered window beneath the target (the NVIDIA App keeps one over the
+/// whole screen) must stay invisible in the animation's background, not become a black
+/// sheet around the growing window (as in 0.4.2 on a machine with the NVIDIA App).
+#[test]
+#[ignore = "drives the live desktop with real clicks; run with `task e2e`"]
+fn invisible_window_beneath_stays_invisible_in_the_animation() {
+    // A slow animation (not Windows' 215 ms), so the corner stays background long enough.
+    let config = "animation_match_windows = false\nanimation_ms = 600\nanimation_style = \"morph\"\n";
+    let Some((_guard, h, zones, log)) = setup_with("fz-maximize-e2e-invisible.log", Some(config)) else {
+        return;
+    };
+    let zone = zones[1];
+    let mut original = POINT::default();
+    unsafe { GetCursorPos(&mut original).unwrap() };
+    let _mouse = MouseGuard(original);
+    place_inside(h, &zone);
+    let screen = unsafe {
+        let x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        let y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        R {
+            l: x,
+            t: y,
+            r: x + GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            b: y + GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        }
+    };
+    // Shown on top of the normal windows, so beneath the (topmost) test window only.
+    let _invisible = InvisibleLayeredWindow::open(&screen);
+    force_foreground(h);
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Near the zone's bottom-right corner: outside the window (placed in the zone's
+    // top-left two thirds), so only background there until the morph is ~70% of the way.
+    let (zw, zh) = size_of(&zone);
+    let probe = R {
+        l: zone.l + zw * 90 / 100,
+        t: zone.t + zh * 85 / 100,
+        r: zone.l + zw * 97 / 100,
+        b: zone.t + zh * 95 / 100,
+    };
+    let before = screen_black_share(&probe);
+    if before > 0.5 {
+        eprintln!("SKIP: the screen near the zone's corner is black already ({before:.2})");
+        return;
+    }
+    let (max_btn, _) = title_bar_buttons(h);
+    click(h, max_btn.x, max_btn.y);
+    let clicked = Instant::now();
+    while !animation_overlay_shown() {
+        assert!(
+            clicked.elapsed() < Duration::from_secs(1),
+            "no animation overlay appeared"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    // About 15% into the 600 ms animation.
+    std::thread::sleep(Duration::from_millis(90));
+    let during = screen_black_share(&probe);
+    assert!(
+        wait_until(Duration::from_secs(2), || frame(h).near(&zone, 1)),
+        "not snapped"
+    );
+    std::thread::sleep(Duration::from_millis(600));
+    let text = std::fs::read_to_string(&log).unwrap();
+    let finished = text
+        .lines()
+        .rfind(|l| l.contains("animation finished"))
+        .expect("no animation");
+    eprintln!("corner black: {before:.2} before, {during:.2} during the animation\n{finished}");
+    assert!(
+        during <= before + 0.2,
+        "the background turned black during the animation ({before:.2} -> {during:.2})"
+    );
 }
 
 #[test]
@@ -1564,14 +1723,8 @@ fn measure_windows_maximize_animation() {
         eprintln!("SKIP: fz-maximize is running (it would intercept the maximize); task stop first");
         return;
     }
-    let mut notepad = Command::new("notepad.exe").spawn().expect("start notepad");
-    let pid = notepad.id();
-    let mut hwnd = None;
-    assert!(wait_until(Duration::from_secs(5), || {
-        hwnd = find_notepad(pid);
-        hwnd.is_some()
-    }));
-    let h = hwnd.unwrap();
+    let (mut notepad, hwnd) = open_notepad();
+    let h = hwnd.expect("notepad window not found");
     let mut mi = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
         ..Default::default()
@@ -2024,6 +2177,201 @@ fn bench_window_capture() {
             median(print_ms),
             print_black * 100.0,
             if print_ok { "" } else { " FAILED" },
+        );
+    }
+}
+
+/// The share of a 16x16 grid of sample points of the screen inside `r` that is pure black
+/// (the same measure as the app's `Canvas::black_share`).
+fn screen_black_share(r: &R) -> f32 {
+    use windows::Win32::Graphics::Gdi::{
+        BitBlt, CAPTUREBLT, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetPixel,
+        HGDIOBJ, ROP_CODE, ReleaseDC, SRCCOPY, SelectObject,
+    };
+    let (w, h) = size_of(r);
+    let mut black = 0;
+    unsafe {
+        let screen = GetDC(None);
+        let mem = CreateCompatibleDC(Some(screen));
+        let bmp = CreateCompatibleBitmap(screen, w, h);
+        let old = SelectObject(mem, HGDIOBJ(bmp.0));
+        let _ = BitBlt(
+            mem,
+            0,
+            0,
+            w,
+            h,
+            Some(screen),
+            r.l,
+            r.t,
+            ROP_CODE(SRCCOPY.0 | CAPTUREBLT.0),
+        );
+        for row in 0..16 {
+            for col in 0..16 {
+                if GetPixel(mem, (2 * col + 1) * w / 32, (2 * row + 1) * h / 32).0 == 0 {
+                    black += 1;
+                }
+            }
+        }
+        SelectObject(mem, old);
+        let _ = DeleteObject(HGDIOBJ(bmp.0));
+        let _ = DeleteDC(mem);
+        ReleaseDC(None, screen);
+    }
+    black as f32 / 256.0
+}
+
+/// What the animation's background would show for each window open now: a DWM thumbnail
+/// of a 400x300 piece of the window, drawn in a click-through overlay exactly over that
+/// piece for a few frames, compared with a screen copy of the same piece taken just before.
+/// A window whose thumbnail is much blacker than the screen there would paint a black box
+/// into the animation. Prints only each window's app, class, styles and black shares;
+/// nothing is saved. Briefly shows the overlay (identical to the screen unless the
+/// thumbnail is wrong).
+#[test]
+#[ignore = "diagnostic: compares each open window's DWM thumbnail with the screen"]
+fn bench_background_thumbnails() {
+    use windows::Win32::Graphics::Dwm::{
+        DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE,
+        DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE, DWMWA_CLOAKED, DwmFlush, DwmRegisterThumbnail,
+        DwmUnregisterThumbnail, DwmUpdateThumbnailProperties,
+    };
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DestroyWindow, GWL_EXSTYLE, GetLayeredWindowAttributes, GetWindowLongPtrW,
+        IsIconic, LWA_ALPHA, RegisterClassExW, SW_SHOWNOACTIVATE, SetLayeredWindowAttributes, WNDCLASSEXW,
+        WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+        WS_POPUP,
+    };
+
+    unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> windows::Win32::Foundation::LRESULT {
+        unsafe { DefWindowProcW(h, m, w, l) }
+    }
+    let screen_black = screen_black_share;
+
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+    let class = w!("fz-maximize.e2e.thumbnail-probe");
+    let hinstance = unsafe { GetModuleHandleW(None) }.unwrap();
+    let wc = WNDCLASSEXW {
+        cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+        lpfnWndProc: Some(proc),
+        hInstance: hinstance.into(),
+        lpszClassName: class,
+        ..Default::default()
+    };
+    unsafe { RegisterClassExW(&wc) };
+    for h in all_top_level_windows() {
+        let mut cloaked = 0u32;
+        unsafe {
+            let _ = DwmGetWindowAttribute(h, DWMWA_CLOAKED, (&mut cloaked as *mut u32).cast(), 4);
+        }
+        if !unsafe { IsWindowVisible(h) }.as_bool() || unsafe { IsIconic(h) }.as_bool() || cloaked != 0 {
+            continue;
+        }
+        let (win, f) = (window_rect(h), frame(h));
+        let (fw, fh) = size_of(&f);
+        if fw < 400 || fh < 300 {
+            continue;
+        }
+        // A piece in the middle of the window's frame.
+        let (cx, cy) = ((f.l + f.r) / 2, (f.t + f.b) / 2);
+        let piece = R {
+            l: cx - 200,
+            t: cy - 150,
+            r: cx + 200,
+            b: cy + 150,
+        };
+        let on_screen = screen_black(&piece);
+        let ex = unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) } as u32;
+        let mut alpha = None;
+        if ex & WS_EX_LAYERED.0 != 0 {
+            let (mut key, mut a, mut flags) = (Default::default(), 0u8, Default::default());
+            if unsafe { GetLayeredWindowAttributes(h, Some(&mut key), Some(&mut a), Some(&mut flags)) }.is_ok()
+                && flags & LWA_ALPHA == LWA_ALPHA
+            {
+                alpha = Some(a);
+            }
+        }
+        let thumb_black = unsafe {
+            let overlay = CreateWindowExW(
+                WS_EX_NOREDIRECTIONBITMAP
+                    | WS_EX_LAYERED
+                    | WS_EX_TOOLWINDOW
+                    | WS_EX_NOACTIVATE
+                    | WS_EX_TRANSPARENT
+                    | WS_EX_TOPMOST,
+                class,
+                None,
+                WS_POPUP,
+                piece.l,
+                piece.t,
+                400,
+                300,
+                None,
+                None,
+                Some(hinstance.into()),
+                None,
+            )
+            .unwrap();
+            let _ = SetLayeredWindowAttributes(overlay, Default::default(), 255, LWA_ALPHA);
+            let thumb = DwmRegisterThumbnail(overlay, h).ok();
+            if let Some(t) = thumb {
+                let props = DWM_THUMBNAIL_PROPERTIES {
+                    dwFlags: DWM_TNP_RECTDESTINATION
+                        | DWM_TNP_RECTSOURCE
+                        | DWM_TNP_VISIBLE
+                        | DWM_TNP_OPACITY
+                        | DWM_TNP_SOURCECLIENTAREAONLY,
+                    rcDestination: RECT {
+                        left: 0,
+                        top: 0,
+                        right: 400,
+                        bottom: 300,
+                    },
+                    // Thumbnail sources are window-relative (see animate::frame_source).
+                    rcSource: RECT {
+                        left: piece.l - win.l,
+                        top: piece.t - win.t,
+                        right: piece.r - win.l,
+                        bottom: piece.b - win.t,
+                    },
+                    opacity: 255,
+                    fVisible: BOOL(1),
+                    fSourceClientAreaOnly: BOOL(0),
+                };
+                let _ = DwmUpdateThumbnailProperties(t, &props);
+            }
+            let _ = ShowWindow(overlay, SW_SHOWNOACTIVATE);
+            for _ in 0..3 {
+                let _ = DwmFlush();
+            }
+            let black = thumb.map(|_| screen_black(&piece));
+            if let Some(t) = thumb {
+                let _ = DwmUnregisterThumbnail(t);
+            }
+            let _ = DestroyWindow(overlay);
+            let _ = DwmFlush();
+            black
+        };
+        let flags: Vec<&str> = [
+            (WS_EX_LAYERED.0, "layered"),
+            (WS_EX_TRANSPARENT.0, "transparent"),
+            (WS_EX_TOPMOST.0, "topmost"),
+            (WS_EX_NOREDIRECTIONBITMAP.0, "no-redirection-bitmap"),
+        ]
+        .into_iter()
+        .filter(|(bit, _)| ex & bit != 0)
+        .map(|(_, name)| name)
+        .collect();
+        eprintln!(
+            "{:<32} {fw}x{fh} [{}{}]: screen {:.0}% black, thumbnail {}",
+            class_of(h),
+            flags.join(" "),
+            alpha.map_or(String::new(), |a| format!(" alpha={a}")),
+            on_screen * 100.0,
+            thumb_black.map_or("unavailable".into(), |b| format!("{:.0}% black", b * 100.0)),
         );
     }
 }

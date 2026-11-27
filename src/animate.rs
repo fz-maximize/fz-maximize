@@ -25,16 +25,19 @@
 //!
 //! 1. **Background:** live thumbnails of every window beneath the target, and of the
 //!    desktop, in z-order. Together they show exactly what the target is about to cover,
-//!    so the real window can move into its zone underneath without being seen.
+//!    so the real window can move into its zone underneath without being seen. A
+//!    thumbnail leaves out a layered window's overall opacity, so it's given that opacity
+//!    explicitly, and windows shown fully transparent are left out (the NVIDIA App keeps
+//!    an invisible full-screen overlay window that a thumbnail draws as solid black).
 //! 2. **Old:** the old window's frame, copied once into a cloaked helper window.
 //! 3. **New:** the real window, live, at its new size.
 //!
 //! Only the old window's frame is copied from the screen, and nothing has to be uploaded
 //! for the background, so the animation starts within a frame or two of the gesture.
 //! (Copying the whole area through GDI took 70-120 ms on a 4K hybrid-GPU laptop, and
-//! showing it as a layered window another 100 ms.) When that copy comes back black, as
-//! it can where the graphics driver shows apps on hardware overlay planes, the window
-//! draws itself instead (`picture_of`).
+//! showing it as a layered window another 100 ms.) If that copy comes back black (a
+//! graphics driver showing the app on a hardware overlay plane could do that), the
+//! window draws itself instead (`picture_of`).
 //!
 //! Runs on its own thread so the main thread keeps handling events. A new request
 //! finishes the current animation immediately.
@@ -564,10 +567,10 @@ const MOSTLY_BLACK: f32 = 0.4;
 ///   brought the window to the front.
 ///
 /// Both take about the same time (measured on a 4K laptop). If the picture is mostly
-/// black, the other method is tried: some graphics drivers show apps on hardware overlay
-/// planes, which a screen copy sees as black (seen on a Snapdragon laptop). If both are
-/// mostly black (protected video, a window that really is black), there's no animation:
-/// better than a black box.
+/// black, the other method is tried (a screen copy can't see content a graphics driver
+/// shows on a hardware overlay plane; some apps don't draw themselves for PrintWindow).
+/// If both are mostly black (protected video, a window that really is black), there's no
+/// animation: better than a black box.
 fn picture_of(hwnd: HWND, win: &Rect, frame: &Rect) -> Option<(Canvas, Capture)> {
     let covered = covered_by_others(hwnd, frame);
     let order: &[Method] = if print_only() {
@@ -603,7 +606,7 @@ fn picture_of(hwnd: HWND, win: &Rect, frame: &Rect) -> Option<(Canvas, Capture)>
 
 /// Whether any visible window above `target` in z-order overlaps its frame. Click-through
 /// windows (WS_EX_TRANSPARENT: overlays like fz-maximize's own or a GPU driver's) don't
-/// count: they're usually see-through.
+/// count: they're usually see-through. Nor do layered windows shown fully transparent.
 fn covered_by_others(target: HWND, frame: &Rect) -> bool {
     unsafe extern "system" fn cb(h: HWND, data: LPARAM) -> BOOL {
         // SAFETY: `data` is the &mut Vec below, alive for the whole enumeration.
@@ -624,7 +627,7 @@ fn covered_by_others(target: HWND, frame: &Rect) -> bool {
             return false;
         }
         let ex = unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) } as u32;
-        if ex & WS_EX_TRANSPARENT.0 != 0 {
+        if ex & WS_EX_TRANSPARENT.0 != 0 || window::constant_alpha(h) == 0 {
             return false;
         }
         window::window_rect(h)
@@ -749,8 +752,8 @@ impl Background {
             let _ = EnumWindows(Some(cb), LPARAM(&mut all as *mut _ as isize));
         }
         let below = all.iter().position(|&h| h == target)? + 1;
-        // (window, window rect, visible frame), top first.
-        let mut beneath: Vec<(HWND, Rect, Rect)> = Vec::new();
+        // (window, window rect, visible frame, opacity), top first.
+        let mut beneath: Vec<(HWND, Rect, Rect, u8)> = Vec::new();
         let mut layers: Vec<(Rect, bool)> = Vec::new();
         for &h in &all[below..] {
             if h == overlay || !unsafe { IsWindowVisible(h) }.as_bool() || window::is_iconic(h) || window::is_cloaked(h)
@@ -765,9 +768,15 @@ impl Background {
             if frame.intersection(area).is_empty() {
                 continue;
             }
+            // A thumbnail would draw this one opaque (see `window::constant_alpha`), but it
+            // isn't on screen at all.
+            let alpha = window::constant_alpha(h);
+            if alpha == 0 {
+                continue;
+            }
             // Layered windows may be see-through: draw them, but not as covering.
             let ex = unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) } as u32;
-            beneath.push((h, win, frame));
+            beneath.push((h, win, frame, alpha));
             layers.push((frame, ex & WS_EX_LAYERED.0 == 0));
         }
         // Only the on-screen part matters: a window may start partly off-screen.
@@ -789,7 +798,7 @@ impl Background {
         };
         // Bottom first: the compositor draws later thumbnails over earlier ones.
         for (i, rects) in visible.into_iter().rev() {
-            let (h, win, frame) = beneath[i];
+            let (h, win, frame, alpha) = beneath[i];
             for piece in rects {
                 let Ok(thumb) = (unsafe { DwmRegisterThumbnail(overlay, h) }) else {
                     tracing::debug!(hwnd = h.0 as isize, "background thumbnail unavailable; not animating");
@@ -805,7 +814,7 @@ impl Background {
                     thumb,
                     &piece.offset(-area.left, -area.top),
                     &source_piece(&full, &frame, &piece),
-                    255,
+                    alpha,
                 );
             }
         }

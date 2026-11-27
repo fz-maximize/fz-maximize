@@ -105,8 +105,11 @@ task package
 1. `task ci` locally: checks, tests, release build and installer.
 2. `task e2e` on a desktop with FancyZones (live behavior; CI can't run this).
 3. `task upstream:check` against the PowerToys version you're shipping for.
-4. Bump `version` in `Cargo.toml` (and `cargo build` so `Cargo.lock` updates) on a
-   branch, open a PR and merge it (`main` only accepts PRs). Merging the bump is the
+4. Bump `version` in `Cargo.toml` (and `cargo build` so `Cargo.lock` updates) and add the
+   version's entry to `CHANGELOG.md` on a branch, open a PR and merge it (`main` only
+   accepts PRs). The entry is "- " bullets written for users: the app shows it in About,
+   the update window shows it before installing, and the release notes start with it. A
+   unit test fails if the version in `Cargo.toml` has no entry. Merging the bump is the
    release: **Tag release** (`.github/workflows/tag-release.yml`) sees a version on `main`
    without a tag and creates `v<ver>` ("fz-maximize <ver>"). Release tags are protected:
    only maintainers and the release automation can create them, and once pushed they
@@ -127,7 +130,8 @@ task package
 latest release ships a crate with a known vulnerability (from [OSV](https://osv.dev):
 RustSec and GitHub advisories; informational notices such as "unmaintained" don't count)
 and `main` no longer does, usually because a Dependabot security update merged, it opens
-a **Release X.Y.Z (security)** PR. The PR bumps the patch version, lists the advisories,
+a **Release X.Y.Z (security)** PR. The PR bumps the patch version, adds a changelog entry
+naming the updated crates and advisories, lists the advisories,
 and requests a review from the release approver (repository variable `RELEASE_REVIEWER`).
 
 * **Approve the PR to release.** It merges itself once CI passes, Tag release tags it, and

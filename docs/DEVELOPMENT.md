@@ -83,6 +83,11 @@ The release binary is a GUI-subsystem app, so in PowerShell pipe its output to s
   live thumbnails of the windows beneath it. A thumbnail draws a layered window without
   its overall opacity, so that opacity is applied to the thumbnail, and fully
   transparent windows (the NVIDIA App's invisible full-screen overlay) are left out.
+* **About** (`about.rs`, `changelog.rs`). The tray menu's About window (or
+  `fz-maximize --about`): version, architecture and install kind, this version's
+  `CHANGELOG.md` entry (built into the exe), and an update button that checks and then
+  installs. The update window shows the new version's entry, read from the release notes
+  between `<!-- whats-new -->` markers (written by release.yml from `CHANGELOG.md`).
 * **FancyZones data** (`fancyzones/`). Parses FancyZones' JSON files, computes zone
   rectangles the way FancyZones does (`layout.rs`), and matches monitors and virtual
   desktops to layouts (`matching.rs`).

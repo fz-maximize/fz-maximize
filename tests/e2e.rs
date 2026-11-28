@@ -2776,3 +2776,119 @@ fn window_text(h: HWND) -> String {
     let n = unsafe { GetWindowTextW(h, &mut buf) };
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
+
+/// The daily check at its chosen time, installing by itself: a portable copy, in a
+/// temporary folder and profile and pretending to be 0.3.0, checked a minute ago and is
+/// set to check again in one to two minutes. It must not check before then, and must
+/// check, then download and swap in the latest release, right after.
+///
+/// Downloads the latest release, and the copy it restarts (that release, run with this
+/// test's profile) reports that the update "didn't complete" because it still pretends
+/// to be 0.3.0. So it only runs with `FZM_E2E_AUTO_UPDATE=1`.
+#[test]
+#[ignore = "diagnostic: network; installs a release into a temporary folder"]
+fn update_installs_automatically_at_its_time() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use windows::Win32::System::SystemInformation::GetLocalTime;
+    if std::env::var("FZM_E2E_AUTO_UPDATE").as_deref() != Ok("1") {
+        eprintln!("SKIP: set FZM_E2E_AUTO_UPDATE=1 to download and install the latest release");
+        return;
+    }
+    let _ = Command::new(EXE).arg("--quit").output();
+    std::thread::sleep(Duration::from_millis(800));
+    let root = std::env::temp_dir().join(format!("fzm-auto-update-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (dir, profile) = (root.join("app"), root.join("profile"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(profile.join("fz-maximize")).unwrap();
+    let exe = dir.join("fz-maximize.exe");
+    std::fs::copy(EXE, &exe).unwrap();
+    let original = std::fs::read(&exe).unwrap();
+
+    // Checked a minute ago; the next check is at the start of the minute after next.
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    std::fs::write(
+        profile.join("fz-maximize").join("update.json"),
+        format!(r#"{{"asked": true, "last_check_unix": {}}}"#, now - 60),
+    )
+    .unwrap();
+    let t = unsafe { GetLocalTime() };
+    let now_local = u32::from(t.wHour) * 3600 + u32::from(t.wMinute) * 60 + u32::from(t.wSecond);
+    let minute = (now_local / 60 + 2) % 1440;
+    let until_check = Duration::from_secs(u64::from((minute * 60 + 86_400 - now_local) % 86_400));
+    let check_at = Instant::now() + until_check;
+    let config = profile.join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "check_for_updates = true\nupdate_check_time = \"{:02}:{:02}\"\ninstall_updates_automatically = true\n",
+            minute / 60,
+            minute % 60
+        ),
+    )
+    .unwrap();
+    eprintln!("check time {:02}:{:02}, in {until_check:?}", minute / 60, minute % 60);
+
+    let log = std::env::temp_dir().join("fz-maximize-e2e-auto-update.log");
+    let mut child = Command::new(&exe)
+        .args(["--console", "--config"])
+        .arg(&config)
+        .env("LOCALAPPDATA", &profile)
+        .env("FZM_UPDATE_TEST_CURRENT", "0.3.0")
+        .env("FZM_LOG", "debug")
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .expect("start fz-maximize");
+    let log_has = |s: &str| std::fs::read_to_string(&log).is_ok_and(|t| t.contains(s));
+
+    // Nothing before the check time (the first tick, 20 s after start, finds it not due).
+    while Instant::now() + Duration::from_secs(3) < check_at {
+        assert!(
+            !log_has("checking for updates"),
+            "checked before its time: see {}",
+            log.display()
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    // Then the check, right at its time, and the install it starts by itself.
+    assert!(
+        wait_until(Duration::from_secs(20), || log_has("checking for updates")),
+        "no check at its time: see {}",
+        log.display()
+    );
+    let late = Instant::now().saturating_duration_since(check_at);
+    eprintln!("checked {late:?} after its time");
+    assert!(
+        wait_until(Duration::from_secs(10), || log_has(
+            "installing the update automatically"
+        )),
+        "the update wasn't installed automatically: see {}",
+        log.display()
+    );
+    assert!(
+        wait_until(Duration::from_secs(120), || log_has("portable update in place")),
+        "the update didn't finish: see {}",
+        log.display()
+    );
+    let _ = wait_until(Duration::from_secs(10), || child.try_wait().ok().flatten().is_some());
+    let _ = child.kill();
+    let swapped = std::fs::read(&exe).unwrap();
+
+    // Quit the copy it restarted (the new release), then clean up.
+    std::thread::sleep(Duration::from_secs(3));
+    let _ = Command::new(&exe).arg("--quit").output();
+    for _ in 0..20 {
+        if std::fs::remove_dir_all(&root).is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    for line in std::fs::read_to_string(&log).unwrap_or_default().lines() {
+        if line.contains("update") {
+            eprintln!("  {}", line.split_once("Z ").map_or(line, |(_, r)| r));
+        }
+    }
+    assert_ne!(swapped, original, "the exe wasn't replaced");
+    assert!(late < Duration::from_secs(10), "checked {late:?} after its time");
+}

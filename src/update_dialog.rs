@@ -245,6 +245,9 @@ const DTM_SETFORMATW: u32 = 0x1032;
 const DTS_UPDOWN: u32 = 0x0001;
 const DTS_TIMEFORMAT: u32 = 0x0009;
 const GDT_VALID: usize = 0;
+/// Window style of a time picker (class `SysDateTimePick32`, which needs
+/// `ICC_DATE_CLASSES`): a time with up/down arrows.
+pub(crate) const TIME_PICKER_STYLE: u32 = DTS_TIMEFORMAT | DTS_UPDOWN;
 
 /// The user's short time format ("h:mm tt", "HH:mm"...).
 fn short_time_format() -> HSTRING {
@@ -274,7 +277,7 @@ fn create_controls(hwnd: HWND, specs: &[Spec]) {
             Ctl::Button => (w!("BUTTON"), BS_PUSHBUTTON as u32 | WS_TABSTOP.0),
             Ctl::DefaultButton => (w!("BUTTON"), BS_DEFPUSHBUTTON as u32 | WS_TABSTOP.0),
             Ctl::Combo => (w!("COMBOBOX"), CBS_DROPDOWNLIST as u32 | WS_VSCROLL.0 | WS_TABSTOP.0),
-            Ctl::Time => (w!("SysDateTimePick32"), DTS_TIMEFORMAT | DTS_UPDOWN | WS_TABSTOP.0),
+            Ctl::Time => (w!("SysDateTimePick32"), TIME_PICKER_STYLE | WS_TABSTOP.0),
         };
         let disabled = if s.enabled { 0 } else { WS_DISABLED.0 };
         let ex = if matches!(s.ctl, Ctl::Notes) {
@@ -307,15 +310,27 @@ fn create_controls(hwnd: HWND, specs: &[Spec]) {
     }
     send(days, CB_SETCURSEL, 0, 0);
     // Install time: 3:00 AM, in the user's time format.
-    let time = item(hwnd, ID_TIME);
+    set_time_picker(item(hwnd, ID_TIME), DEFAULT_MINUTE);
+}
+
+/// Show `minute_of_day` in a time picker (`SysDateTimePick32` with `DTS_TIMEFORMAT`), in
+/// the user's short time format.
+pub(crate) fn set_time_picker(picker: HWND, minute_of_day: u32) {
     let format = short_time_format();
-    send(time, DTM_SETFORMATW, 0, format.as_ptr() as isize);
+    send(picker, DTM_SETFORMATW, 0, format.as_ptr() as isize);
     let mut st = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
-    st.wHour = (DEFAULT_MINUTE / 60) as u16;
-    st.wMinute = (DEFAULT_MINUTE % 60) as u16;
+    st.wHour = ((minute_of_day / 60) % 24) as u16;
+    st.wMinute = (minute_of_day % 60) as u16;
     st.wSecond = 0;
     st.wMilliseconds = 0;
-    send(time, DTM_SETSYSTEMTIME, GDT_VALID, &st as *const SYSTEMTIME as isize);
+    send(picker, DTM_SETSYSTEMTIME, GDT_VALID, &st as *const SYSTEMTIME as isize);
+}
+
+/// The time a time picker shows, in minutes after midnight.
+pub(crate) fn time_picker_minute(picker: HWND) -> Option<u32> {
+    let mut st = SYSTEMTIME::default();
+    let ok = send(picker, DTM_GETSYSTEMTIME, 0, &mut st as *mut SYSTEMTIME as isize);
+    (ok == GDT_VALID as isize).then(|| u32::from(st.wHour) * 60 + u32::from(st.wMinute))
 }
 
 fn relayout(hwnd: HWND, specs: &[Spec], dpi: u32, font: HFONT) {
@@ -401,18 +416,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     choose(hwnd, Choice::InstallNow)
                 }
                 ID_AT => {
-                    let mut st = SYSTEMTIME::default();
-                    let ok = send(
-                        item(hwnd, ID_TIME),
-                        DTM_GETSYSTEMTIME,
-                        0,
-                        &mut st as *mut SYSTEMTIME as isize,
-                    );
-                    let minute = if ok == GDT_VALID as isize {
-                        u32::from(st.wHour) * 60 + u32::from(st.wMinute)
-                    } else {
-                        DEFAULT_MINUTE
-                    };
+                    let minute = time_picker_minute(item(hwnd, ID_TIME)).unwrap_or(DEFAULT_MINUTE);
                     choose(hwnd, Choice::InstallAt { minute_of_day: minute });
                 }
                 ID_REMIND => {

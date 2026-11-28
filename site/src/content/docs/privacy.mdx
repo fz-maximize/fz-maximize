@@ -37,7 +37,8 @@ Uninstalling keeps these files in case you reinstall; delete both folders to rem
 **Off unless you turn it on.** The first time fz-maximize starts, it asks whether to check
 for updates; you can change your answer any time in **Settings → General**.
 
-When it's on, once a day fz-maximize asks GitHub for this project's latest release: an
+When it's on, once a day, at the time set in Settings (3:00 AM by default), fz-maximize
+asks GitHub for this project's latest release: an
 HTTPS request to `api.github.com/repos/fz-maximize/fz-maximize/releases/latest`. Choosing
 **Check for updates now** in the tray menu, or **Check for updates** in the About window,
 makes the same request, whether or not daily checks are on.
@@ -45,7 +46,8 @@ makes the same request, whether or not daily checks are on.
 - **What's sent:** an ordinary web request. GitHub sees your IP address, as with any web
   request, and the request names the app and its version (`fz-maximize/0.3.5`). Nothing
   else: no identifier, no information about your PC, your windows or your settings.
-- **When you install an update:** fz-maximize downloads the release's files from
+- **When you install an update** (or it installs one automatically, if you turned that
+  on): fz-maximize downloads the release's files from
   `github.com/fz-maximize/fz-maximize/releases`, the same files as the Download links.
 - Requests go through Windows' own networking, so your proxy settings apply.
 

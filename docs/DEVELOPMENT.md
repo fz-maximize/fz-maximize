@@ -96,9 +96,13 @@ The release binary is a GUI-subsystem app, so in PowerShell pipe its output to s
   (seen on hybrid-GPU laptops), so the last known identity per display is remembered in
   `%LOCALAPPDATA%\fz-maximize\monitors.json`.
 * **Updates** (`update.rs`, `update_dialog.rs`; `check_for_updates`, off by default, asked
-  once). Once a day a worker thread asks GitHub's API for the latest release (WinHTTP, so
+  once). Once a day, at `update_check_time` (3:00 AM by default; a time missed while the PC
+  was off or asleep counts as soon as the app runs again), a worker thread asks GitHub's
+  API for the latest release (WinHTTP, so
   proxies work); a newer one is offered with a notification, and the update window installs
-  it now, schedules it, reminds later or skips it (`update.json` keeps that state). Until
+  it now, schedules it, reminds later or skips it (`update.json` keeps that state). With
+  `install_updates_automatically`, the daily check installs it silently instead, as a
+  scheduled install would (not a skipped version, and not in development builds). Until
   it's installed, skipped or scheduled, the tray icon carries a yellow dot (drawn into the
   icon in `tray.rs`, with a see-through ring around it) and the update is the menu's first,
   bold item.
@@ -121,6 +125,11 @@ to be an older version: `FZM_UPDATE_TEST_CURRENT=0.3.0`. Two diagnostic tests us
   (`FZM_E2E_UPDATE_PRESS` = `remind` | `skip` | `at` | `install`). With
   `FZM_E2E_UPDATE_EXE` pointing at a copy in an install folder (installed per-user with a
   real release's installer) or a plain folder, `install` exercises a real update.
+* `cargo test --release --test e2e update_installs_automatically_at_its_time -- --ignored --nocapture`,
+  with `FZM_E2E_AUTO_UPDATE=1` (it skips otherwise): a portable copy in a temporary folder and profile, set to check a minute or two later
+  and to install automatically, must not check before that time, then checks and swaps
+  in the latest release by itself. The copy it restarts still pretends to be 0.3.0, so it
+  shows an "update didn't complete" notification; the test quits it.
 
 ### Diagnosing the animation's picture
 

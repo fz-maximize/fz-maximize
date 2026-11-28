@@ -17,7 +17,9 @@ use windows::Win32::Graphics::Gdi::{
     HDC, HFONT, HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::{BST_CHECKED, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx};
+use windows::Win32::UI::Controls::{
+    BST_CHECKED, ICC_DATE_CLASSES, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
+};
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, SystemParametersInfoForDpi};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -34,6 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, PCWSTR, w};
 
 use crate::config::{self, AlreadyInZone, AnimationStyle, BypassModifier, Config, MismatchAction};
+use crate::update_dialog::{TIME_PICKER_STYLE, set_time_picker, time_picker_minute};
 
 pub const SETTINGS_CLASS: PCWSTR = w!("fz-maximize.settings");
 
@@ -125,6 +128,8 @@ const ID_MISMATCH: i32 = 141;
 const ID_AUTOSTART: i32 = 150;
 const ID_LOGLEVEL: i32 = 151;
 const ID_UPDATES: i32 = 152;
+const ID_UPDATE_TIME: i32 = 153;
+const ID_AUTO_INSTALL: i32 = 154;
 /// Hint labels (drawn in grey) use ids in this range.
 const ID_HINT_FIRST: i32 = 900;
 
@@ -141,6 +146,8 @@ enum Ctl {
     Combo,
     Edit,
     MultiEdit,
+    /// A time of day with up/down arrows.
+    Time,
     Button,
     DefaultButton,
 }
@@ -269,6 +276,11 @@ fn layout(ctx: &Context) -> (Vec<Spec>, i32) {
     b.group("General");
     b.check(ID_AUTOSTART, "Start with Windows");
     b.check(ID_UPDATES, "Check for updates once a day");
+    b.nested(true);
+    b.labeled("Check at:", ID_UPDATE_TIME, Ctl::Time, 120);
+    b.hint("If this PC is off or asleep then, it checks as soon as it's on again.");
+    b.check(ID_AUTO_INSTALL, "Install new versions automatically, instead of asking");
+    b.nested(false);
     b.labeled("Log detail:", ID_LOGLEVEL, Ctl::Combo, 120);
     b.end_group();
 
@@ -446,7 +458,11 @@ fn update_dependent_controls(hwnd: HWND) {
     let can_animate = checked(hwnd, ID_PRE_MOUSE) || checked(hwnd, ID_PRE_WINUP);
     let animate = can_animate && checked(hwnd, ID_ANIMATE);
     let custom = animate && !checked(hwnd, ID_ANIM_MATCH);
+    // The check's time and installing only matter while checking.
+    let updates = checked(hwnd, ID_UPDATES);
     unsafe {
+        let _ = EnableWindow(item(hwnd, ID_UPDATE_TIME), updates);
+        let _ = EnableWindow(item(hwnd, ID_AUTO_INSTALL), updates);
         let _ = EnableWindow(item(hwnd, ID_WINUP_BYPASS), win_up_bypass);
         let _ = EnableWindow(item(hwnd, ID_ANIMATE), can_animate);
         let _ = EnableWindow(item(hwnd, ID_ANIM_STYLE), animate);
@@ -504,6 +520,7 @@ fn create_controls(hwnd: HWND, specs: &[Spec]) {
                 (ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN) as u32 | WS_VSCROLL.0 | WS_TABSTOP.0,
                 WS_EX_CLIENTEDGE.0,
             ),
+            Ctl::Time => (w!("SysDateTimePick32"), TIME_PICKER_STYLE | WS_TABSTOP.0, 0),
             Ctl::Button => (w!("BUTTON"), BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0),
             Ctl::DefaultButton => (w!("BUTTON"), BS_DEFPUSHBUTTON as u32 | WS_TABSTOP.0, 0),
         };
@@ -593,16 +610,18 @@ fn fill(hwnd: HWND, ctx: &Context) {
     set_check(hwnd, ID_ANIMATE, c.animate_maximize);
     set_check(hwnd, ID_ANIM_MATCH, c.animation_match_windows);
     set_text(hwnd, ID_ANIM_MS, &c.animation_ms.to_string());
-    update_dependent_controls(hwnd);
     set_check(hwnd, ID_FZ_EXCLUDED, c.respect_fancyzones_excluded_apps);
     set_check(hwnd, ID_FZ_DEFAULT, c.use_fancyzones_default_layout);
     set_check(hwnd, ID_FZ_REQUIRE, c.require_fancyzones_enabled);
     set_check(hwnd, ID_CHECK, c.fancyzones_check);
     set_check(hwnd, ID_AUTOSTART, ctx.autostart);
     set_check(hwnd, ID_UPDATES, c.check_for_updates);
+    set_time_picker(item(hwnd, ID_UPDATE_TIME), c.update_check_minute());
+    set_check(hwnd, ID_AUTO_INSTALL, c.install_updates_automatically);
     set_text(hwnd, ID_ASPECT, &format!("{}", c.min_aspect_ratio));
     set_text(hwnd, ID_MONITORS, &list_to_lines(&c.excluded_monitors));
     set_text(hwnd, ID_APPS, &list_to_lines(&c.excluded_apps));
+    update_dependent_controls(hwnd);
 }
 
 /// Read the controls back into a `Config` (plus the autostart checkbox).
@@ -647,6 +666,10 @@ fn read(hwnd: HWND) -> Result<(Config, bool), String> {
         on_fancyzones_mismatch: MISMATCH[combo_index(hwnd, ID_MISMATCH).min(MISMATCH.len() - 1)].1,
         log_level: LOG_LEVELS[combo_index(hwnd, ID_LOGLEVEL).min(LOG_LEVELS.len() - 1)].to_string(),
         check_for_updates: checked(hwnd, ID_UPDATES),
+        update_check_time: config::format_time_of_day(
+            time_picker_minute(item(hwnd, ID_UPDATE_TIME)).unwrap_or_else(|| Config::default().update_check_minute()),
+        ),
+        install_updates_automatically: checked(hwnd, ID_AUTO_INSTALL),
     };
     cfg.validate()?;
     Ok((cfg, checked(hwnd, ID_AUTOSTART)))
@@ -717,7 +740,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     ID_APPLY => {
                         apply(hwnd);
                     }
-                    ID_ANIMATE | ID_ANIM_MATCH | ID_PRE_MOUSE | ID_PRE_WINUP => update_dependent_controls(hwnd),
+                    ID_ANIMATE | ID_ANIM_MATCH | ID_PRE_MOUSE | ID_PRE_WINUP | ID_UPDATES => {
+                        update_dependent_controls(hwnd)
+                    }
                     ID_OPEN_FILE => {
                         let path = STATE.with(|s| s.borrow().as_ref().map(|s| s.ctx.config_path.clone()));
                         if let Some(p) = path {
@@ -799,7 +824,7 @@ fn register_class() -> bool {
     *REGISTERED.get_or_init(|| unsafe {
         let icc = INITCOMMONCONTROLSEX {
             dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-            dwICC: ICC_STANDARD_CLASSES,
+            dwICC: ICC_STANDARD_CLASSES | ICC_DATE_CLASSES,
         };
         let _ = InitCommonControlsEx(&icc);
         let hinstance = GetModuleHandleW(None).unwrap_or_default();
@@ -984,7 +1009,16 @@ mod tests {
             assert!(s.x >= 0 && s.x + s.w <= WIDTH, "{:?} overflows", s.text);
             assert!(s.y + s.h.min(40) <= height, "{:?} below the window", s.text);
         }
-        for id in [ID_OK, ID_CANCEL, ID_APPLY, ID_MODIFIER, ID_AUTOSTART, ID_MONITORS] {
+        for id in [
+            ID_OK,
+            ID_CANCEL,
+            ID_APPLY,
+            ID_MODIFIER,
+            ID_AUTOSTART,
+            ID_MONITORS,
+            ID_UPDATE_TIME,
+            ID_AUTO_INSTALL,
+        ] {
             assert!(specs.iter().any(|s| s.id == id), "missing control {id}");
         }
     }

@@ -124,6 +124,8 @@ impl App {
         logging::set_level(&cfg.log_level);
         self.config = cfg;
         self.sync_input_hooks();
+        // The daily check's time may have changed.
+        self.arm_update_timer();
     }
 
     /// Run the low-level input hooks only while an interception is enabled (they add a
@@ -1394,7 +1396,7 @@ impl App {
                         self.notify_update(&v);
                     }
                 }
-                if self.config.check_for_updates && self.update.check_due(now) {
+                if self.config.check_for_updates && self.update.check_due(now, self.latest_check_time(now)) {
                     self.start_update_check(CheckFrom::Timer);
                 }
             }
@@ -1402,14 +1404,24 @@ impl App {
         self.arm_update_timer();
     }
 
-    /// The next tick: in `UPDATE_TICK`, or sooner when a scheduled install or a reminder
-    /// is due before then, so "install at 3:00" starts at 3:00.
+    /// When the daily check last fell due (the latest check time at or before `now`).
+    fn latest_check_time(&self, now: u64) -> u64 {
+        update::latest_check_time(now, update::local_seconds_of_day(), self.config.update_check_minute())
+    }
+
+    /// The next tick: in `UPDATE_TICK`, or sooner when a scheduled install, a reminder or
+    /// the daily check is due before then, so "install at 3:00" starts at 3:00.
     fn arm_update_timer(&self) {
         let now = update::unix_now();
+        let next_check = self
+            .config
+            .check_for_updates
+            .then(|| update::seconds_until(update::local_seconds_of_day(), self.config.update_check_minute()));
         let next_due = [&self.update.scheduled, &self.update.remind]
             .into_iter()
             .flatten()
             .map(|t| t.at_unix.saturating_sub(now))
+            .chain(next_check)
             .min();
         let secs = next_due.map_or(UPDATE_TICK.as_secs(), |d| d.clamp(5, UPDATE_TICK.as_secs()));
         unsafe {
@@ -1473,7 +1485,14 @@ impl App {
                 match (found, from) {
                     (update::Found::Notify, CheckFrom::Timer) => {
                         if let Some(v) = self.update.offered().map(|o| o.version.clone()) {
-                            self.notify_update(&v);
+                            if self.config.install_updates_automatically
+                                && update::install_kind() != update::InstallKind::Dev
+                            {
+                                tracing::info!(version = %v, "installing the update automatically");
+                                self.start_install(&v, false);
+                            } else {
+                                self.notify_update(&v);
+                            }
                         }
                     }
                     (update::Found::UpToDate, CheckFrom::Menu) => {
@@ -1615,7 +1634,13 @@ impl App {
             },
             None if checked => about::Status::UpToDate,
             None => about::Status::Idle {
-                auto: self.config.check_for_updates,
+                daily: self.config.check_for_updates.then(|| about::Daily {
+                    at: local_time_label(update::seconds_until(
+                        update::local_seconds_of_day(),
+                        self.config.update_check_minute(),
+                    )),
+                    install: self.config.install_updates_automatically,
+                }),
             },
         }
     }
@@ -1643,7 +1668,8 @@ fn ask_about_updates() {
     let text = w!("Check for updates automatically?\n\n\
          fz-maximize can check GitHub once a day for a new version, then let you install it now or \
          later. Nothing about you or your PC is sent; GitHub sees an ordinary web request.\n\n\
-         You can change this any time in Settings > General.");
+         You can change this any time in Settings > General, where you can also choose when it \
+         checks, or have it install new versions by itself.");
     // Topmost: at sign-in Windows may not let a background app take the foreground, and
     // the question would otherwise open behind other windows.
     let flags = MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST;

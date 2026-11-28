@@ -42,9 +42,9 @@ const RELEASES: &str = "https://github.com/fz-maximize/fz-maximize/releases";
 /// Where the update check stands, as the window shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
-    /// Nothing checked since the window opened. `auto`: daily checks are on.
+    /// Nothing checked since the window opened. `daily`: when daily checks are on.
     Idle {
-        auto: bool,
+        daily: Option<Daily>,
     },
     Checking,
     UpToDate,
@@ -55,6 +55,15 @@ pub enum Status {
     Failed(String),
     Installing(String),
     InstallFailed(String),
+}
+
+/// The daily update check, when it's on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Daily {
+    /// When it checks ("3:00 AM", in the user's time format).
+    pub at: String,
+    /// It installs what it finds.
+    pub install: bool,
 }
 
 /// What the window shows.
@@ -202,8 +211,15 @@ fn link_safe(s: &str) -> String {
 /// The update button's label and the status line (SysLink markup) for `status`.
 fn status_texts(status: &Status, can_install: bool) -> (String, String) {
     match status {
-        Status::Idle { auto: true } => ("Check for updates".into(), "Checks automatically once a day.".into()),
-        Status::Idle { auto: false } => (
+        Status::Idle { daily: Some(d) } => (
+            "Check for updates".into(),
+            if d.install {
+                format!("Checks every day at {}, and installs new versions.", link_safe(&d.at))
+            } else {
+                format!("Checks automatically every day at {}.", link_safe(&d.at))
+            },
+        ),
+        Status::Idle { daily: None } => (
             "Check for updates".into(),
             "Automatic checks are off (Settings > General).".into(),
         ),
@@ -642,7 +658,12 @@ mod tests {
 
     #[test]
     fn layout_fits_and_ids_are_unique() {
-        let (specs, height) = layout(&info(Status::Idle { auto: true }));
+        let (specs, height) = layout(&info(Status::Idle {
+            daily: Some(Daily {
+                at: "3:00 AM".into(),
+                install: true,
+            }),
+        }));
         assert!(height > 250 && height < 450, "height {height}");
         let mut ids: Vec<i32> = specs.iter().map(|s| s.id).collect();
         let n = ids.len();
@@ -669,6 +690,25 @@ mod tests {
         let (button, text) = status_texts(&available, false);
         assert_eq!(button, "Check for updates");
         assert!(text.contains("development build"), "{text}");
+    }
+
+    #[test]
+    fn idle_status_says_when_it_checks() {
+        let daily = |install| Status::Idle {
+            daily: Some(Daily {
+                at: "3:00 AM".into(),
+                install,
+            }),
+        };
+        assert_eq!(
+            status_texts(&daily(false), true).1,
+            "Checks automatically every day at 3:00 AM."
+        );
+        assert_eq!(
+            status_texts(&daily(true), true).1,
+            "Checks every day at 3:00 AM, and installs new versions."
+        );
+        assert!(status_texts(&Status::Idle { daily: None }, true).1.contains("off"));
     }
 
     #[test]

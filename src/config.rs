@@ -123,6 +123,32 @@ pub struct Config {
     /// Check GitHub once a day for a new release (off unless the user turns it on; they
     /// are asked once).
     pub check_for_updates: bool,
+    /// When the daily check happens: local time of day, "HH:MM" (24-hour). Missed while
+    /// the PC was off or asleep, it happens as soon as fz-maximize runs again.
+    pub update_check_time: String,
+    /// Install a new version as soon as the daily check finds it, instead of offering it.
+    pub install_updates_automatically: bool,
+}
+
+/// The default [`Config::update_check_time`]: 3:00 AM, like the update window's suggested
+/// install time.
+pub const DEFAULT_UPDATE_CHECK_TIME: &str = "03:00";
+
+/// Minutes after midnight for "HH:MM" (or "H:MM"), 24-hour.
+pub fn parse_time_of_day(s: &str) -> Option<u32> {
+    let (h, m) = s.trim().split_once(':')?;
+    let digits = |p: &str| p.bytes().all(|b| b.is_ascii_digit());
+    if !(matches!(h.len(), 1 | 2) && m.len() == 2 && digits(h) && digits(m)) {
+        return None;
+    }
+    let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
+    (h < 24 && m < 60).then_some(h * 60 + m)
+}
+
+/// "HH:MM" for `minute_of_day` minutes after midnight.
+pub fn format_time_of_day(minute_of_day: u32) -> String {
+    let m = minute_of_day % (24 * 60);
+    format!("{:02}:{:02}", m / 60, m % 60)
 }
 
 impl Default for Config {
@@ -150,6 +176,8 @@ impl Default for Config {
             on_fancyzones_mismatch: MismatchAction::Warn,
             log_level: "info".into(),
             check_for_updates: false,
+            update_check_time: DEFAULT_UPDATE_CHECK_TIME.into(),
+            install_updates_automatically: false,
         }
     }
 }
@@ -168,6 +196,12 @@ log_level = "info"
 # Check GitHub once a day for a new version and offer to install it. Off unless you
 # turn it on (fz-maximize asks once). Tray -> "Check for updates now" works either way.
 check_for_updates = false
+# When to check: local time, 24-hour "HH:MM". If the PC is off or asleep then, it
+# checks as soon as it's on again.
+update_check_time = "03:00"
+# Install a new version as soon as the check finds it, instead of offering it.
+# fz-maximize closes and restarts for a moment while it updates.
+install_updates_automatically = false
 
 # ---- FancyZones integration ------------------------------------------------------
 
@@ -329,7 +363,20 @@ impl Config {
         ) {
             return Err(format!("unknown log_level '{}'", self.log_level));
         }
+        if parse_time_of_day(&self.update_check_time).is_none() {
+            return Err(format!(
+                "update_check_time must be a 24-hour time like \"03:00\", not '{}'",
+                self.update_check_time
+            ));
+        }
         Ok(())
+    }
+
+    /// The daily update check's time, in minutes after midnight (local time).
+    pub fn update_check_minute(&self) -> u32 {
+        parse_time_of_day(&self.update_check_time)
+            .or_else(|| parse_time_of_day(DEFAULT_UPDATE_CHECK_TIME))
+            .unwrap_or(3 * 60)
     }
 }
 
@@ -394,6 +441,8 @@ mod tests {
             on_fancyzones_mismatch: MismatchAction::Native,
             log_level: "debug".into(),
             check_for_updates: true,
+            update_check_time: "21:45".into(),
+            install_updates_automatically: true,
         };
         let text = render(&cfg);
         assert_eq!(parse(&text).unwrap(), cfg);
@@ -455,12 +504,33 @@ mod tests {
         assert!(parse("animation_ms = 5").is_err());
         assert!(parse("animation_ms = 5000").is_err());
         assert!(parse("on_fancyzones_mismatch = \"panic\"").is_err());
+        for bad in ["24:00", "12:60", "3", "3:5", "03:00 AM", "-1:00", "", "1:2:3"] {
+            assert!(parse(&format!("update_check_time = \"{bad}\"")).is_err(), "{bad:?}");
+        }
         assert_eq!(
             parse("on_fancyzones_mismatch = \"native\"")
                 .unwrap()
                 .on_fancyzones_mismatch,
             MismatchAction::Native
         );
+    }
+
+    #[test]
+    fn update_check_times() {
+        assert_eq!(parse_time_of_day("03:00"), Some(180));
+        assert_eq!(parse_time_of_day("3:00"), Some(180));
+        assert_eq!(parse_time_of_day(" 23:59 "), Some(23 * 60 + 59));
+        assert_eq!(parse_time_of_day("00:00"), Some(0));
+        assert_eq!(parse_time_of_day("24:00"), None);
+        assert_eq!(parse_time_of_day("+3:00"), None);
+        assert_eq!(format_time_of_day(180), "03:00");
+        assert_eq!(format_time_of_day(23 * 60 + 59), "23:59");
+        for m in [0, 1, 59, 60, 721, 1439] {
+            assert_eq!(parse_time_of_day(&format_time_of_day(m)), Some(m));
+        }
+        assert_eq!(Config::default().update_check_minute(), 180);
+        let c = parse("update_check_time = \"7:30\"").unwrap();
+        assert_eq!(c.update_check_minute(), 7 * 60 + 30);
     }
 
     #[test]

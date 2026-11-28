@@ -1,10 +1,13 @@
 //! Update check and install (opt-in: setting `check_for_updates`, off by default; the
 //! user is asked once).
 //!
-//! Once a day, fz-maximize asks GitHub for the project's latest release
+//! Once a day, at the time the user chose (`update_check_time`, 3:00 AM by default; or as
+//! soon as it runs again, if the PC was off or asleep then), fz-maximize asks GitHub for
+//! the project's latest release
 //! (`api.github.com/repos/fz-maximize/fz-maximize/releases/latest`). When it's newer, a
 //! notification offers it; the update window (`update_dialog.rs`) installs it now, at a
-//! chosen time, reminds later or skips that version.
+//! chosen time, reminds later or skips that version. With `install_updates_automatically`,
+//! the check installs it straight away instead (unless that version was skipped).
 //!
 //! Installing downloads the release's file for this copy (the installer, or the
 //! portable zip), only from this project's GitHub release assets, checks its SHA-256
@@ -14,15 +17,13 @@
 //! Network access goes through WinHTTP, so Windows' proxy settings apply.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 const LATEST_URL: &str = "https://api.github.com/repos/fz-maximize/fz-maximize/releases/latest";
 /// Release files must come from here (the project's own release assets).
 const ASSET_PREFIX: &str = "https://github.com/fz-maximize/fz-maximize/releases/download/";
-/// How often to check, when checking is on.
-pub const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// Downloads bigger than this are refused (releases are a few MB).
 const MAX_DOWNLOAD: usize = 64 * 1024 * 1024;
 
@@ -227,10 +228,10 @@ impl UpdateState {
         std::fs::rename(tmp, path)
     }
 
-    pub fn check_due(&self, now: u64) -> bool {
-        self.last_check_unix == 0
-            || now >= self.last_check_unix + CHECK_INTERVAL.as_secs()
-            || now < self.last_check_unix
+    /// Whether the daily check is due: the check time ([`latest_check_time`]) has come
+    /// since the last check, or there has been none (or the clock went back past it).
+    pub fn check_due(&self, now: u64, latest_check_time: u64) -> bool {
+        self.last_check_unix == 0 || self.last_check_unix < latest_check_time || now < self.last_check_unix
     }
 
     /// Record a check's result.
@@ -343,6 +344,16 @@ pub fn seconds_until(now_local_secs: u32, target_minute: u32) -> u64 {
     let target = (target_minute % (24 * 60)) * 60;
     let delta = (target + DAY - now) % DAY;
     u64::from(if delta == 0 { DAY } else { delta })
+}
+
+/// When the daily check last fell due, as a unix time: the latest `check_minute` of the
+/// day (local time, 0..1440) at or before now, given the unix time now and the local time
+/// of day now in seconds. The same minute counts as now.
+pub fn latest_check_time(now_unix: u64, now_local_secs: u32, check_minute: u32) -> u64 {
+    const DAY: u32 = 24 * 60 * 60;
+    let now = now_local_secs % DAY;
+    let target = (check_minute % (24 * 60)) * 60;
+    now_unix.saturating_sub(u64::from((now + DAY - target) % DAY))
 }
 
 pub fn unix_now() -> u64 {
@@ -782,10 +793,10 @@ mod tests {
         let r = parse_release(JSON).unwrap();
         let cur = v("0.3.4");
         let mut s = UpdateState::default();
-        assert!(s.check_due(1000));
+        assert!(s.check_due(1000, 0));
         assert_eq!(s.found(Some(&r), cur, 1000), Found::Notify);
-        assert!(!s.check_due(1000 + 60));
-        assert!(s.check_due(1000 + CHECK_INTERVAL.as_secs()));
+        assert!(!s.check_due(1000 + 60, 500));
+        assert!(s.check_due(1000 + 86400, 1000 + 86400 - 500));
         assert_eq!(s.offered().unwrap().version, "0.3.5");
 
         // Remind in 3 days: quiet until then, then due once.
@@ -879,6 +890,55 @@ mod tests {
         assert_eq!(seconds_until(at(3, 0), 3 * 60), 86400);
         // Seconds count: 2:59:30 -> 30 s.
         assert_eq!(seconds_until(at(2, 59) + 30, 3 * 60), 30);
+    }
+
+    #[test]
+    fn daily_check_happens_at_its_time_or_as_soon_as_the_pc_is_on() {
+        const DAY: u64 = 86_400;
+        let at = |h: u32, m: u32| h * 3600 + m * 60;
+        // A day whose local midnight is unix time 10 days in (any offset works the same).
+        let midnight = 10 * DAY;
+        let local = |unix: u64| ((unix - midnight) % DAY) as u32;
+        let latest = |unix: u64, minute: u32| latest_check_time(unix, local(unix), minute);
+        let three = 3 * 60;
+        // The latest 3:00 AM: today's once it has come, yesterday's before that.
+        assert_eq!(latest(midnight + u64::from(at(9, 15)), three), midnight + 3 * 3600);
+        assert_eq!(latest(midnight + u64::from(at(3, 0)), three), midnight + 3 * 3600);
+        assert_eq!(
+            latest(midnight + u64::from(at(2, 59)), three),
+            midnight - DAY + 3 * 3600
+        );
+        assert_eq!(
+            latest(midnight + u64::from(at(23, 0)), 23 * 60 + 30),
+            midnight - DAY + at(23, 30) as u64
+        );
+
+        let mut s = UpdateState::default();
+        let due = |s: &UpdateState, unix: u64| s.check_due(unix, latest(unix, three));
+        // Never checked: due right away, whatever the time.
+        assert!(due(&s, midnight + u64::from(at(14, 0))));
+        // Checked at 2:00 PM: not again until 3:00 AM.
+        s.last_check_unix = midnight + u64::from(at(14, 0));
+        assert!(!due(&s, midnight + u64::from(at(23, 59))));
+        assert!(!due(&s, midnight + DAY + u64::from(at(2, 59))));
+        assert!(due(&s, midnight + DAY + u64::from(at(3, 0))));
+        // Asleep at 3:00 AM: due as soon as the PC is on again, later that day or days later.
+        assert!(due(&s, midnight + DAY + u64::from(at(8, 30))));
+        assert!(due(&s, midnight + 4 * DAY + u64::from(at(1, 0))));
+        // Checked at 3:00 AM (or after, e.g. on waking): not again until the next 3:00 AM.
+        s.last_check_unix = midnight + DAY + u64::from(at(3, 0));
+        assert!(!due(&s, midnight + DAY + u64::from(at(3, 0))));
+        assert!(!due(&s, midnight + 2 * DAY + u64::from(at(2, 59))));
+        assert!(due(&s, midnight + 2 * DAY + u64::from(at(3, 0))));
+        // Moving the time to one that already passed today, since the last check: due now.
+        s.last_check_unix = midnight + u64::from(at(8, 0));
+        assert!(!due(&s, midnight + u64::from(at(10, 0))));
+        assert!(s.check_due(
+            midnight + u64::from(at(10, 0)),
+            latest(midnight + u64::from(at(10, 0)), 9 * 60)
+        ));
+        // The clock went back before the last check: check again rather than wait.
+        assert!(due(&s, midnight + u64::from(at(7, 0))));
     }
 
     #[test]

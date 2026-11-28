@@ -39,6 +39,23 @@ notification: install now, at a time you pick, remind later, or skip that versio
 fz-maximize asks the first time it starts. **Check for updates now** in the tray menu, and
 the button in **About fz-maximize**, work either way. See [Privacy](/fz-maximize/privacy/#update-checks) for what's sent.
 
+#### Check at
+
+<small><code>update_check_time</code> · default <code>"03:00"</code></small>
+
+The time of day it checks, in your local time (24-hour in the config file). If your PC
+is off or asleep then, it checks as soon as it's on again.
+
+#### Install new versions automatically, instead of asking
+
+<small><code>install_updates_automatically</code> · default off</small>
+
+When the daily check finds a new version, fz-maximize installs it right away instead of
+offering it, in the same way as **Install now**: from this project's GitHub release,
+checked against its SHA-256 checksums. fz-maximize closes and restarts for a moment, then
+a notification says which version you're running. A version you chose to skip isn't
+installed.
+
 ## FancyZones integration
 
 #### Do nothing while FancyZones is turned off in PowerToys

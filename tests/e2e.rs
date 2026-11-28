@@ -20,9 +20,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, FindWindowW, GA_ROOT, GetAncestor, GetClassNameW, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
     GetTitleBarInfo, GetWindowRect, GetWindowThreadProcessId, HWND_TOPMOST, IsWindowVisible, IsZoomed, PostMessageW,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_MAXIMIZE, SW_RESTORE,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetCursorPos, SetForegroundWindow,
-    SetWindowPos, ShowWindow, TITLEBARINFO, TITLEBARINFOEX, WM_CLOSE, WM_GETTITLEBARINFOEX, WindowFromPoint,
+    SM_CXDRAG, SM_CXVIRTUALSCREEN, SM_CYDRAG, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_MAXIMIZE,
+    SW_RESTORE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetCursorPos, SetForegroundWindow,
+    SetWindowPos, ShowWindow, TITLEBARINFO, TITLEBARINFOEX, WM_CLOSE, WM_GETTITLEBARINFOEX, WM_NCHITTEST,
+    WindowFromPoint,
 };
 use windows::core::{BOOL, w};
 
@@ -404,8 +405,10 @@ fn send_mouse(x: i32, y: i32, flags: MOUSE_EVENT_FLAGS) {
             GetSystemMetrics(SM_CYVIRTUALSCREEN),
         )
     };
-    let nx = ((x - vx) as i64 * 65535 / (vw - 1).max(1) as i64) as i32;
-    let ny = ((y - vy) as i64 * 65535 / (vh - 1).max(1) as i64) as i32;
+    // Aim at the pixel's center (absolute input spans 0..65536 across the virtual screen),
+    // so the cursor lands exactly on (x, y) rather than a pixel short.
+    let nx = (((x - vx) as i64 * 2 + 1) * 32768 / vw.max(1) as i64) as i32;
+    let ny = (((y - vy) as i64 * 2 + 1) * 32768 / vh.max(1) as i64) as i32;
     let input = INPUT {
         r#type: INPUT_MOUSE,
         Anonymous: INPUT_0 {
@@ -655,6 +658,31 @@ fn title_bar_buttons(h: HWND) -> (POINT, POINT) {
             y: (bar.top + bar.bottom) / 2,
         },
     )
+}
+
+/// A point where pressing drags `h` by its title bar: the middle of the first stretch the
+/// window hit-tests as `HTCAPTION`, a third of the way along the title bar. The title bar
+/// point from [`title_bar_buttons`] can be on the resize border along the top instead.
+fn caption_point(h: HWND) -> POINT {
+    const HTCAPTION: isize = 2;
+    let (_, bar) = title_bar_buttons(h);
+    let f = frame(h);
+    let hit = |y: i32| {
+        let lparam = ((y as u16 as u32) << 16) | (bar.x as u16 as u32);
+        unsafe { SendMessageW(h, WM_NCHITTEST, Some(WPARAM(0)), Some(LPARAM(lparam as i32 as isize))) }.0
+    };
+    let first = (f.t..f.t + 200)
+        .find(|&y| hit(y) == HTCAPTION)
+        .expect("no title bar found under the top of the window");
+    let height = (first..f.t + 200).take_while(|&y| hit(y) == HTCAPTION).count() as i32;
+    eprintln!(
+        "title bar at x={}: caption from y={first} for {height} px (window top {})",
+        bar.x, f.t
+    );
+    POINT {
+        x: bar.x,
+        y: first + height / 2,
+    }
 }
 
 fn foreground_class() -> String {
@@ -2444,11 +2472,41 @@ fn locked_zone_maximized_window_resists_resize_and_drag_restores() {
     );
 
     // 2. A plain click on the title bar leaves it where it is (and the click still works).
-    let (_, caption) = title_bar_buttons(h);
+    let caption = caption_point(h);
     click(h, caption.x, caption.y);
     std::thread::sleep(Duration::from_millis(700)); // past the double-click time
     assert!(window_rect(h).near(&snapped, 1), "click moved the locked window");
     assert!(foreground_is(h), "click on the title bar should keep it active");
+
+    // 2b. A click that wobbles, as a hand does, is still a click: like a truly maximized
+    // window, it stays put until the cursor is Windows' drag distance away from the press.
+    let (cx, cy) = unsafe { (GetSystemMetrics(SM_CXDRAG), GetSystemMetrics(SM_CYDRAG)) };
+    send_mouse(caption.x, caption.y, MOUSE_EVENT_FLAGS(0));
+    std::thread::sleep(Duration::from_millis(40));
+    send_mouse(caption.x, caption.y, MOUSEEVENTF_LEFTDOWN);
+    std::thread::sleep(Duration::from_millis(40));
+    for (x, y) in [
+        (caption.x + cx - 1, caption.y),
+        (caption.x - cx, caption.y + cy - 1),
+        (caption.x, caption.y - cy),
+    ] {
+        send_mouse(x, y, MOUSE_EVENT_FLAGS(0));
+        std::thread::sleep(Duration::from_millis(30));
+        let mut at = POINT::default();
+        unsafe { GetCursorPos(&mut at).unwrap() };
+        assert_eq!((at.x, at.y), (x, y), "cursor didn't land where the test put it");
+    }
+    send_mouse(caption.x, caption.y - cy, MOUSEEVENTF_LEFTUP);
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(
+        window_rect(h).near(&snapped, 1),
+        "a wobbly click moved the locked window: {:?}",
+        window_rect(h)
+    );
+    assert!(
+        foreground_is(h),
+        "a wobbly click on the title bar should keep it active"
+    );
 
     // 3. Dragging the title bar restores the pre-snap size under the cursor and moves it.
     let grab = POINT {

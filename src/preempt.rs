@@ -134,6 +134,15 @@ pub struct Press {
     pub locked: bool,
 }
 
+/// Whether the cursor at `pt` is still within the drag rectangle around the press at
+/// `start`, so a held title-bar press is still a click. The rectangle is the one Windows
+/// uses (`DragDetect`, and dragging a truly maximized window's title bar): `drag` pixels
+/// on each side of the press, the right and bottom edges excluded. With the default of 4,
+/// a drag starts 4 pixels right or down, or 5 left or up, at any display scaling.
+fn in_drag_rect(start: Point, pt: Point, (cx, cy): (i32, i32)) -> bool {
+    (start.x - cx..start.x + cx).contains(&pt.x) && (start.y - cy..start.y + cy).contains(&pt.y)
+}
+
 /// `WM_NCHITTEST` results for the resize borders and the size grip.
 pub fn is_resize_hit(hit: u32) -> bool {
     // HTSIZE (4), HTLEFT..HTBOTTOMRIGHT (10..=17).
@@ -286,10 +295,10 @@ impl Recognizer {
     }
 
     /// The mouse moved (with the left button down, if a press is pending). `drag` is the
-    /// system drag rectangle (`SM_CXDRAG` x `SM_CYDRAG`): moving out of it starts a drag.
+    /// system drag distance (`SM_CXDRAG`, `SM_CYDRAG`); see [`in_drag_rect`].
     pub fn moved(&mut self, pt: Point, drag: (i32, i32)) -> Verdict {
         if let Some(Pending::CaptionHold { root, start }) = self.pending
-            && ((pt.x - start.x).abs() > drag.0 / 2 || (pt.y - start.y).abs() > drag.1 / 2)
+            && !in_drag_rect(start, pt, drag)
         {
             self.pending = None;
             self.last_caption = None;
@@ -1175,6 +1184,34 @@ mod tests {
         assert!(!Verdict::DragRestore(W).swallows());
         assert!(!r.wants_moves());
         assert_eq!(r.release(|_| false), Verdict::Pass);
+    }
+
+    #[test]
+    fn locked_title_bar_drag_starts_where_windows_does() {
+        // As measured on a truly maximized window (Windows 11, drag distance 4): it stays
+        // maximized up to 3 pixels right or down and 4 left or up, and restores beyond.
+        let held = |dx: i32, dy: i32| {
+            let mut r = Recognizer::default();
+            assert_eq!(r.press(locked(HT_CAPTION, 100, 0), DBL), Verdict::Swallow);
+            r.moved(Point::new(100 + dx, 10 + dy), DRAG) == Verdict::Pass
+        };
+        for (dx, dy) in [(3, 0), (-4, 0), (0, 3), (0, -4), (3, 3), (-4, -4)] {
+            assert!(held(dx, dy), "({dx}, {dy}) is still a click");
+        }
+        for (dx, dy) in [(4, 0), (-5, 0), (0, 4), (0, -5), (4, -4)] {
+            assert!(!held(dx, dy), "({dx}, {dy}) starts a drag");
+        }
+        // Wobbling back and forth inside the rectangle never starts a drag.
+        let mut r = Recognizer::default();
+        r.press(locked(HT_CAPTION, 100, 0), DBL);
+        for x in [101, 103, 97, 96, 102, 100] {
+            assert_eq!(r.moved(Point::new(x, 12), DRAG), Verdict::Pass);
+        }
+        assert_eq!(r.release(|_| false), Verdict::ReplayClick);
+        // A larger drag distance in Windows' settings is followed.
+        assert_eq!(r.press(locked(HT_CAPTION, 100, 5000), DBL), Verdict::Swallow);
+        assert_eq!(r.moved(Point::new(107, 10), (8, 8)), Verdict::Pass);
+        assert_eq!(r.moved(Point::new(108, 10), (8, 8)), Verdict::DragRestore(W));
     }
 
     #[test]

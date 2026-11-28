@@ -10,6 +10,11 @@ checks that the version in Cargo.toml has an entry, so add one in the version bu
 Security release PRs add theirs automatically.
 -->
 
+## 0.4.7
+
+- You can choose when the daily update check happens: Settings → General → Check at (3:00 AM by default). If your PC is off or asleep then, it checks as soon as it's on again.
+- New option: Install new versions automatically, instead of asking. The daily check then installs a new version as soon as it finds it, and fz-maximize restarts for a moment. A version you chose to skip isn't installed.
+
 ## 0.4.6
 
 - Clicking the title bar of a window maximized into a zone no longer returns it to its old size when the mouse moves slightly during the click. Like a maximized window, it now waits until the mouse has moved as far as Windows needs to start a drag (4 pixels by default).

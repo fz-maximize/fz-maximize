@@ -10,6 +10,10 @@ checks that the version in Cargo.toml has an entry, so add one in the version bu
 Security release PRs add theirs automatically.
 -->
 
+## 0.4.6
+
+- Clicking the title bar of a window maximized into a zone no longer returns it to its old size when the mouse moves slightly during the click. Like a maximized window, it now waits until the mouse has moved as far as Windows needs to start a drag (4 pixels by default).
+
 ## 0.4.5
 
 - While an update is waiting, the tray icon shows a small yellow dot, so you still see it if you missed the notification. It stays until you install or skip the update, or pick a time to install it. The update is also the first item in the tray menu, and the icon's tooltip names it.
